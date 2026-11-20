@@ -176,6 +176,35 @@ const DEFAULT_PROMPT = [
   '总长度控制在 900 字以内；宁可条目短一点，也不要漏掉人和话。',
 ].join('\n');
 
+// 长提示词在个别模型上会返回空正文（实测 DeepSeek 跟随模式）。
+// 空一次就用这条短提示词重试，别让整张图被当成「没取到」。
+const FALLBACK_PROMPT = '这张图里是什么？简单说清主体、场景和画面里的文字；如果是聊天截图，按左右气泡逐条转写，看不清就说看不清。';
+
+// 哪些模型对长提示词返回过空正文：记进程级，下一张图直接用短提示词。
+const SHORT_FIRST = new Set();
+
+function firstText(resp) {
+  const text = resp && resp.json && resp.json.choices && resp.json.choices[0]
+    && resp.json.choices[0].message && resp.json.choices[0].message.content;
+  return String(text || '').trim();
+}
+
+function checkStatus(resp) {
+  if (resp.status === 200) return;
+  const msg = (resp.json && resp.json.error && (resp.json.error.message || resp.json.error.code)) || ('HTTP ' + resp.status);
+  // 401/403 基本都是 Key 不对：跟随模式下要用聊天模型那家服务商的 Key
+  const hint = resp.status === 401 || resp.status === 403
+    ? '（Key 无效或没有看图权限：跟随聊天模型时要用同一家服务商的 Key；手动指定智谱视觉模型则要 open.bigmodel.cn 的 Key）'
+    : resp.status === 402
+      ? '（账户余额不足：看图用的是同一家服务商的额度，充值后重试，或换成有免费额度的智谱 GLM-4.6V-Flash）'
+      : resp.status === 404
+      ? '（模型名这家服务商不认：自动模式下用的是当前聊天服务商的看图模型，可以手动换一个）'
+      : resp.status === 400
+        ? '（可能是这个模型不支持图片输入：在「看图」里手动换成本服务商支持看图的模型再试）'
+        : '';
+  throw new Error('视觉模型返回：' + msg + hint);
+}
+
 /**
  * OpenCode Go（opencode.ai）的请求要求客户端自报身份 + 一个稳定会话号：
  *   不带 UA → Cloudflare 直接拦（HTTP 403 error code 1010）；
@@ -299,14 +328,14 @@ async function describe(config, { imageBase64, mime = 'image/jpeg', prompt = '' 
   }
   const cleanB64 = String(imageBase64).replace(/^data:[^,]*,/, '').replace(/\s+/g, '');
 
-  const body = {
+  const request = (promptText) => postJson(baseUrl + '/chat/completions', {
     model,
     messages: [
       {
         role: 'user',
         content: [
           { type: 'image_url', image_url: { url: `data:${realMime};base64,${cleanB64}` } },
-          { type: 'text', text: prompt || DEFAULT_PROMPT },
+          { type: 'text', text: promptText },
         ],
       },
     ],
@@ -314,31 +343,26 @@ async function describe(config, { imageBase64, mime = 'image/jpeg', prompt = '' 
     // 智谱 GLM-4V 系列 max_tokens 上限就是 1024（超了直接 400），
     // 别的服务商可以给多一些；要改也可以写 config.json 的 vision.maxTokens
     max_tokens: Number(v.maxTokens) || (/bigmodel\.cn/i.test(baseUrl) ? 1024 : 1600),
-  };
+  }, headers, Number(v.timeoutMs) || 30000);
 
   const headers = apiKey ? { Authorization: 'Bearer ' + apiKey } : {};
-  const resp = await postJson(baseUrl + '/chat/completions', body, headers, Number(v.timeoutMs) || 30000);
-  if (resp.status !== 200) {
-    const msg = (resp.json && resp.json.error && (resp.json.error.message || resp.json.error.code)) || ('HTTP ' + resp.status);
-    // 401/403 基本都是 Key 不对：跟随模式下要用聊天模型那家服务商的 Key
-    const hint = resp.status === 401 || resp.status === 403
-      ? '（Key 无效或没有看图权限：跟随聊天模型时要用同一家服务商的 Key；手动指定智谱视觉模型则要 open.bigmodel.cn 的 Key）'
-      : resp.status === 402
-        ? '（账户余额不足：看图用的是同一家服务商的额度，充值后重试，或换成有免费额度的智谱 GLM-4.6V-Flash）'
-        : resp.status === 404
-        ? '（模型名这家服务商不认：自动模式下用的是当前聊天服务商的看图模型，可以手动换一个）'
-        : resp.status === 400
-          ? '（可能是这个模型不支持图片输入：在「看图」里手动换成本服务商支持看图的模型再试）'
-          : '';
-    throw new Error('视觉模型返回：' + msg + hint);
+  // 空正文过一次的模型记下来：同一进程里下一张图直接用短提示词，少等一轮。
+  const preferShort = !prompt && SHORT_FIRST.has(model);
+  let resp = await request(preferShort ? FALLBACK_PROMPT : (prompt || DEFAULT_PROMPT));
+  checkStatus(resp);
+  let text = firstText(resp);
+  // 有的模型（实测 DeepSeek 跟随模式）遇到长提示词会返回空正文：
+  // 内容不为空才算识别成功，空一次就换短提示词重试一次，避免整条消息被判成「没取到图」。
+  if (!text && !preferShort) {
+    SHORT_FIRST.add(model);
+    resp = await request(FALLBACK_PROMPT);
+    checkStatus(resp);
+    text = firstText(resp);
   }
-  const text =
-    resp.json &&
-    resp.json.choices &&
-    resp.json.choices[0] &&
-    resp.json.choices[0].message &&
-    resp.json.choices[0].message.content;
-  return String(text || '').trim();
+  if (!text) {
+    throw new Error('视觉模型返回空内容：可能这个模型不支持图片输入，或提示词被拒；可在「看图」里换一个视觉模型再试');
+  }
+  return text;
 }
 
 module.exports = { describe, resolveKey, status, TEST_IMAGE, maskKey, sniffMime, requestHeaders };

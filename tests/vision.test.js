@@ -30,6 +30,13 @@ test('视觉模型的输出上限给满（智谱上限 1024，不能再被截断
   assert.ok(Number(cap[1]) <= 1000, '提示词上限别超过 1000 字：' + cap[1]);
 });
 
+test('视觉模型返回空正文时用短提示词重试一次', () => {
+  assert.match(visionSrc, /const FALLBACK_PROMPT/);
+  // 空正文不能当成功返回：先用短提示词重试，再不行就明确报错。
+  assert.match(visionSrc, /if \(!text[\s\S]{0,200}request\(FALLBACK_PROMPT\)/);
+  assert.match(visionSrc, /throw new Error\('视觉模型返回空内容/);
+});
+
 test('桥接优先拿完整图，缩略图只作为失败后的兜底', () => {
   assert.match(bridgeSrc, /for _tier in \(['"]full['"], ['"]best['"]\)/, '要按 full → best 顺序取图');
   assert.match(bridgeSrc, /tier=tier/);
