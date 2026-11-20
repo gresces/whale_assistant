@@ -32,6 +32,11 @@ internal static class PersonaPackage
         ["discussionMaxChars"] = (20,4000), ["emojiChance"] = (0,1)
     };
 
+    static string ReadText(JsonElement item, string key)
+        => item.TryGetProperty(key, out var value) && value.ValueKind == JsonValueKind.String
+            ? (value.GetString() ?? "").Trim()
+            : "";
+
     internal static Dictionary<string, object> Read(JsonElement data)
     {
         if (data.ValueKind != JsonValueKind.Object) throw new InvalidDataException("人设必须是 JSON 对象");
@@ -73,6 +78,30 @@ internal static class PersonaPackage
                 || aliases.EnumerateArray().Any(v => v.ValueKind != JsonValueKind.String || v.GetString().Length > 40))
                 throw new InvalidDataException("人设别名无效");
             result["aliases"] = aliases.EnumerateArray().Select(v => v.GetString().Trim()).Where(v => v.Length > 0).ToArray();
+        }
+        // 自定义段落：坏条目丢弃而不是整包失败（与内核归一化一致）。
+        // 显式空数组必须保留，否则应用一份空段落预设时清不掉旧段落。
+        if (data.TryGetProperty("customBlocks", out var customBlocks))
+        {
+            if (customBlocks.ValueKind != JsonValueKind.Array)
+                throw new InvalidDataException("自定义段落格式无效");
+            var blocks = new List<Dictionary<string, string>>();
+            var seen = new HashSet<string>(StringComparer.Ordinal);
+            foreach (var item in customBlocks.EnumerateArray())
+            {
+                if (blocks.Count >= 10) break;
+                if (item.ValueKind != JsonValueKind.Object) continue;
+                var id = ReadText(item, "id");
+                if (!Regex.IsMatch(id, "^custom-[0-9a-f]{8}$") || !seen.Add(id)) continue;
+                var text = ReadText(item, "text");
+                if (text.Length == 0) continue;
+                if (text.Length > 2000) text = text.Substring(0, 2000);
+                var title = ReadText(item, "title");
+                if (title.Length == 0) title = "自定义段落";
+                if (title.Length > 40) title = title.Substring(0, 40);
+                blocks.Add(new Dictionary<string, string> { ["id"] = id, ["title"] = title, ["text"] = text });
+            }
+            result["customBlocks"] = blocks;
         }
         var modern = data.TryGetProperty("schemaVersion", out var schema) && schema.ValueKind == JsonValueKind.Number && schema.TryGetInt32(out var schemaVersion) && schemaVersion == 1;
         var hasPrompt = result.TryGetValue("customPrompt", out var prompt) && ((string)prompt).Length > 0;

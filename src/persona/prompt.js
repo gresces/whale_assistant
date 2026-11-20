@@ -11,6 +11,7 @@ const { customIdentityBlock, currentIdentityBlock, usesNewPersona } = require('.
 const { STANDING_ROAST, conversationPreferences, emojiLines } = require('./expression');
 const styleProfileLib = require('./styleProfile');
 const selfModel = require('./selfModel');
+const customBlocks = require('./customBlocks');
 
 /**
  * 提示词构造入口。人设字段、表达偏好和持久化分别由独立模块维护。
@@ -701,6 +702,9 @@ function buildBlocks({ config, msg = {}, profile, notes = [], noteReminders = []
     statics.push(selfModel.ruleLines(onDuty.model, onDuty.policy).join('\n'));
   } else {
     if (custom || !modern) statics.push(custom || introLines(config).join('\n'));
+    // 提示词画布的自定义段落：紧跟在补充要求之后、基础人设之前。
+    // 没有段落时这里不 push 任何东西，旧配置的输出逐字节不变。
+    for (const line of customBlocks.promptLines(P.customBlocks)) statics.push(line);
     if (custom || modern) statics.push(customIdentityBlock(P));
   }
   statics.push([

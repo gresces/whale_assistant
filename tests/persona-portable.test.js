@@ -46,7 +46,8 @@ test('单文件完整保存表达设置，导出白名单不包含账号与运�
   for (const key of Object.keys(fields).filter(k => k !== 'name')) assert.deepEqual(saved[key], fields[key], key);
   const exported = (await post(app, '/api/persona/export', {})).persona;
   assert.equal(exported.schemaVersion, 1);
-  assert.deepEqual(presets.toPatch(exported), fields);
+  // customBlocks 是可分享字段（契约 v1）；空数组也要显式往返，切预设时才能清空旧段落。
+  assert.deepEqual(presets.toPatch(exported), { ...fields, customBlocks: [] });
   assert.doesNotMatch(JSON.stringify(exported), /private-owner|wxid_test_owner|apiKey|permissions|mutedGroups/);
 });
 
@@ -68,6 +69,30 @@ test('人设页气泡数保存后读取和离线重载一致', async t => {
   const current = await (await fetch(app.url + '/api/persona')).json();
   assert.equal(current.persona.maxBubbles, 5);
   assert.equal(readSnapshot(app.root, {})['/api/persona'].persona.maxBubbles, 5);
+});
+
+test('自定义段落随人设包导出 / 导入往返，显式空数组能清空', async t => {
+  const app = await fixture(t);
+  const blocks = [
+    { id: 'custom-1234abcd', title: '关于我的工作', text: '我在医院上班。' },
+    { id: 'custom-5678abcd', title: '作息', text: '晚上十一点后不回消息。' },
+  ];
+  await post(app, '/api/persona', { customBlocks: blocks });
+  const exported = (await post(app, '/api/persona/export', {})).persona;
+  assert.deepEqual(exported.customBlocks, blocks, '导出包要带自定义段落');
+
+  // 模拟离线导入：把导出的人设包落成一份自建预设，再应用。
+  const presetId = 'user-blocks-roundtrip';
+  const dir = path.join(app.root, 'data/personas');
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, presetId + '.json'), JSON.stringify({
+    ...exported, id: presetId, name: '往返', source: 'user',
+  }));
+  await post(app, '/api/persona', { sourcePreset: '', customBlocks: [] });
+  assert.deepEqual(app.runtime.config.persona.customBlocks, [], '显式空数组能清空');
+  const applied = await post(app, '/api/persona/preset', { id: presetId });
+  assert.deepEqual(applied.persona.customBlocks, blocks, '导入后段落完全一致');
+  assert.deepEqual(app.runtime.config.persona.customBlocks, blocks);
 });
 
 test('主动搭话成功记录进入对应私聊上下文', async t => {

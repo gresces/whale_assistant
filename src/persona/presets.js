@@ -9,6 +9,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { portableFields } = require('./portable');
+const customBlocks = require('./customBlocks');
 
 const ID_RE = /^[a-z0-9][a-z0-9._-]{0,60}$/i;
 const USER_PREFIX = 'user-';
@@ -72,6 +73,14 @@ function writeHidden(config, hidden) {
 /** 内置预设一旦删除就保持隐藏 */
 function visibleUnderHidden(hidden, item) {
   return !hidden.items[item.id];
+}
+
+/** 预设正文长度：自定义提示词 + 画布段落正文（只算会被拼进提示词的内容）。 */
+function charsOf(data) {
+  const prompt = String((data && data.customPrompt) || '').length;
+  const blocks = customBlocks.normalizeBlocks(data && data.customBlocks)
+    .reduce((sum, block) => sum + block.text.length, 0);
+  return prompt + blocks;
 }
 
 function userPreset(config, name) {
@@ -139,7 +148,7 @@ function list(config) {
       order,
       name: String(data.name || ''),
       description: String(data.description || ''),
-      chars: String(data.customPrompt || '').length,
+      chars: charsOf(data),
     };
     if (!visibleUnderHidden(hidden, item)) continue;
     out.push(item);
@@ -189,6 +198,8 @@ function fromConfig(config) {
     personality: String(p.personality || '').trim().slice(0, 500),
     background: String(p.background || '').trim().slice(0, 500),
     customPrompt: String(p.customPrompt || '').trim(),
+    // 画布段落跟包一起走；坏条目丢弃、超限裁剪，导入方不需要再猜格式。
+    customBlocks: customBlocks.normalizeBlocks(p.customBlocks),
     emoji: String(p.emojiLevel || '正常').trim(),
     ownerName: String(p.ownerName || '你').trim(),
     aliases: Array.isArray(p.aliases) ? p.aliases.slice() : [],
@@ -375,6 +386,9 @@ function toPatch(preset) {
       if (Object.hasOwn(portable, key)) patch[key] = portable[key];
     }
     for (const key of ['historyTurns', 'groupHistoryTurns']) if (Object.hasOwn(portable, key)) patch[key] = portable[key];
+    // customBlocks 同样允许显式空数组：切到一份没有段落的预设时，不能残留上一份的。
+    // portableFields 已经按 10 段 / 40 字标题 / 2000 字正文裁剪并丢掉坏条目。
+    if (Object.hasOwn(portable, 'customBlocks')) patch.customBlocks = portable.customBlocks;
   }
   return Object.keys(patch).length ? patch : null;
 }

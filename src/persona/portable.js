@@ -1,5 +1,7 @@
 'use strict';
 
+const customBlocks = require('./customBlocks');
+
 // 可分享字段必须显式列出，绝不把整个 config、主人账号或权限配置放入人设包。
 const NUMBERS = Object.freeze({
   age: [1, 120], privateMaxChars: [40, 800], groupMaxChars: [20, 300],
@@ -27,6 +29,8 @@ function portableFields(data = {}, { local = false } = {}) {
   if (['关', '少', '正常', '多'].includes(data.emoji)) out.emoji = data.emoji;
   if (Array.isArray(data.aliases)) out.aliases = data.aliases.filter(v => typeof v === 'string')
     .map(v => v.trim().slice(0, 40)).filter(Boolean).slice(0, 30);
+  // 画布自定义段落：坏条目直接丢（不让整包失败），标题/正文按现有上限裁剪，最多 10 段。
+  if (Array.isArray(data.customBlocks)) out.customBlocks = customBlocks.normalizeBlocks(data.customBlocks);
   return out;
 }
 

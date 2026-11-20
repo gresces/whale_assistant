@@ -185,24 +185,130 @@ test('背景模糊与透明度可调，玻璃面板 + 自动蒙版保证文字�
   assert.ok(settings.includes('SetBackdropBlur') && settings.includes('SetBackdropOpacity') && settings.includes('SetSurfaceOpacity'), '滑块没接到 Appearance');
 });
 
-test('人设页按四层分组，维护与能力开关不再混入角色设置', () => {
+test('人设工作台：左侧段落编辑 + 右侧最终提示词预览，8 个稳定段落', () => {
   const xaml = readLauncher('Views/PersonaPage.xaml');
   const code = readLauncher('Views/PersonaPage.xaml.cs');
-  assert.doesNotMatch(xaml, /\bSubNav\b/, 'PersonaPage.xaml 里还留着 SubNav');
-  assert.doesNotMatch(code, /\bSubNav\b/, 'PersonaPage.xaml.cs 里还引用 SubNav');
-  for (const name of ['SecPreset', 'SecRelation', 'SecExpression', 'SecMemory']) {
-    assert.ok(xaml.includes(`x:Name="${name}"`));
-  }
-  assert.doesNotMatch(xaml, /OnJumpSection|Tag="Sec/);
-  assert.doesNotMatch(code, /OnJumpSection/);
-  assert.doesNotMatch(xaml, /FlagsHost|SecFlags|实验开关|ChkLinks/);
-  assert.doesNotMatch(code, /LoadFlagsAsync|OnFlagClick|HiddenFlags|ChkLinks|\/api\/features/);
-  assert.match(xaml, /Header="自定义补充提示词"/);
-  assert.match(xaml, /Header="清空指定对话记忆"/);
-  assert.match(xaml, /AutomationProperties.Name="搜索主要联系人"/);
-  assert.match(xaml, /昵称或自称不能授予权限/);
+  const between = (start, end) => {
+    const a = xaml.indexOf(start);
+    const b = xaml.indexOf(end);
+    assert.ok(a >= 0 && b > a, `找不到段落边界：${start} → ${end}`);
+    return xaml.slice(a, b);
+  };
+
+  // 双栏：左 55 / 右 45；窄于阈值收进底部折叠区。
+  assert.ok(xaml.includes('x:Name="Workbench"'), '缺少左右分栏容器');
+  assert.match(xaml, /<ColumnDefinition Width="11\*" \/>[\s\S]{0,240}<ColumnDefinition Width="9\*" \/>/,
+    '左右列应按 55 / 45 分配');
+  assert.ok(xaml.includes('x:Name="PreviewPanel"'), '缺少右侧预览面板');
+  assert.ok(xaml.includes('x:Name="NarrowPreviewExpander"'), '窄窗口缺少底部可展开预览');
+  assert.match(code, /NarrowWindowWidth = 1080/, '窄于 1080 要切换布局');
+  assert.match(code, /Workbench\.Children\.Remove\(PreviewPanel\)/, '窄窗口要把预览挂到底部');
   assert.ok(xaml.includes('x:Name="Body"'), '主体滚动区还在');
+
+  // 契约顺序：identity → personality → background → speech → behavior → custom → custom-* → memory
+  const order = [...xaml.matchAll(/x:Name="(Sec[A-Za-z]+)"/g)].map((m) => m[1]);
+  assert.deepEqual(order, ['SecIdentity', 'SecPersonality', 'SecBackground', 'SecSpeech',
+    'SecBehavior', 'SecCustom', 'SecBlocks', 'SecMemory'], '段落顺序必须与契约 v1 一致');
+
+  // 身份：五个字段同一张卡，不再散成多块。
+  const identity = between('x:Name="SecIdentity"', 'x:Name="SecPersonality"');
+  for (const field of ['TxtName', 'TxtAge', 'TxtJob', 'TxtLook', 'TxtOwner']) {
+    assert.ok(identity.includes(`x:Name="${field}"`), '身份卡缺少字段：' + field);
+  }
+  assert.ok(identity.indexOf('TxtName') < identity.indexOf('TxtOwner'), '名字和称呼应在同一张身份卡');
+
+  // 性格 / 经历：多行文本 + 字数 + 恢复默认。
+  const personality = between('x:Name="SecPersonality"', 'x:Name="SecBackground"');
+  assert.ok(personality.includes('x:Name="TxtPerson"'));
+  assert.ok(personality.includes('x:Name="PersonalityCount"'));
+  assert.ok(personality.includes('x:Name="BtnDefaultPersonality"'));
+  const background = between('x:Name="SecBackground"', 'x:Name="SecSpeech"');
+  assert.ok(background.includes('x:Name="TxtBack"'));
+  assert.ok(background.includes('x:Name="BackgroundCount"'));
+  assert.ok(background.includes('x:Name="BtnDefaultBackground"'));
+
+  // 说话方式：四个紧凑控件 + 一句派生说明。
+  const speech = between('x:Name="SecSpeech"', 'x:Name="SecBehavior"');
+  for (const field of ['TxtPrivate', 'TxtGroup', 'TxtBubbles', 'SldEmoji']) {
+    assert.ok(speech.includes(`x:Name="${field}"`), '说话方式缺少控件：' + field);
+  }
+  assert.ok(speech.includes('x:Name="SpeechDerived"'), '缺少派生说明');
+  assert.match(code, /私聊最多 .*群聊最多 .*最多 .*条 · 颜文字 /, '派生说明要跟设置同步');
+
+  // 回复行为：四个开关 + 折叠的风格学习，功能原样保留。
+  const behavior = between('x:Name="SecBehavior"', 'x:Name="SecCustom"');
+  for (const field of ['ChkRoast', 'ChkProactive', 'ChkOpinions', 'ChkNewBehavior']) {
+    assert.ok(behavior.includes(`x:Name="${field}"`), '回复行为缺少开关：' + field);
+  }
+  assert.match(behavior, /Header="对话风格学习"[^>]*IsExpanded="False"|IsExpanded="False"[^>]*Header="对话风格学习"/,
+    '风格学习要收进默认收起的折叠小节');
+  for (const keep of ['CmbStyleMode', 'ChkStyleUseLlm', 'BtnStyleMemory', 'BtnStyleExport',
+    'BtnStyleClear', 'TxtStylePreview', 'StyleState', 'StyleHint']) {
+    assert.ok(behavior.includes(`x:Name="${keep}"`), '风格学习缺功能：' + keep);
+  }
+
+  // 补充要求 / 自定义段落 / 记忆。
+  assert.ok(between('x:Name="SecCustom"', 'x:Name="SecBlocks"').includes('x:Name="TxtPrompt"'));
+  const blocks = between('x:Name="SecBlocks"', 'x:Name="SecMemory"');
+  assert.ok(blocks.includes('x:Name="CustomBlocksHost"'));
+  assert.ok(blocks.includes('x:Name="BtnAddBlock"'));
+  assert.match(xaml, /空段落不会进入提示词/, '空段落要有元数据提示');
+  assert.match(code, /MaxCustomBlocks = 10/, '自定义段落上限应为 10');
+  assert.match(code, /AppDialog\.Confirm[\s\S]{0,260}删除自定义段落/, '删除段落必须确认');
+  const memory = between('x:Name="SecMemory"', 'x:Name="NarrowPreviewExpander"');
+  assert.match(memory, /Header="身份关系与记忆"/);
+  for (const keep of ['TxtMasterSearch', 'TxtAliases', 'TxtTurns', 'TxtGroupTurns', 'BtnResetMemory', 'CmbMemoryChat']) {
+    assert.ok(memory.includes(`x:Name="${keep}"`), '记忆卡缺功能：' + keep);
+  }
+
+  // 旧散块（各自独立的名字/年龄/性格/外观/补充提示词/字数/颜文字/分条/主动行为）不再出现。
+  for (const legacy of ['SecPreset', 'SecExpression', 'SecRelation', 'Text="内在性格"',
+    'Header="外观与经历"', 'Header="自定义补充提示词"', 'Text="表达偏好"', 'Text="人设与预设"']) {
+    assert.ok(!xaml.includes(legacy), '仍在渲染旧散块：' + legacy);
+  }
 });
+
+test('提示词画布：自动保存、预览随保存刷新、404 降级不炸整页', () => {
+  const xaml = readLauncher('Views/PersonaPage.xaml');
+  const code = readLauncher('Views/PersonaPage.xaml.cs');
+
+  // 右栏：标题 + 私聊/群聊 + token + 复制 + 刷新状态 + 只读正文。
+  assert.match(xaml, /模型收到的提示词/);
+  for (const name of ['BtnPreviewPrivate', 'BtnPreviewGroup', 'PreviewTokens', 'BtnCopyPrompt',
+    'BtnRefreshPrompt', 'PreviewStatus', 'PreviewText', 'PreviewPlaceholder']) {
+    assert.ok(xaml.includes(`x:Name="${name}"`), '预览区缺少控件：' + name);
+  }
+  assert.ok(xaml.includes('Content="私聊"') && xaml.includes('Content="群聊"'), '缺少私聊 / 群聊切换');
+  assert.match(xaml, /x:Name="PreviewText"[^>]*IsReadOnly="True"|IsReadOnly="True"[^>]*x:Name="PreviewText"/,
+    '预览正文必须只读');
+  assert.match(code, /\/api\/persona\/prompt\?chatType=/, '预览必须来自 GET /api/persona/prompt');
+  assert.doesNotMatch(code, /buildPrompt|systemParts|拼提示词/, '前端不能自己拼提示词');
+
+  // 文本段：600ms 防抖 + 失焦即保存，走 /api/persona/block。
+  assert.match(code, /BlockSaveDelayMs = 600/, '文本段要用 600ms 防抖');
+  assert.match(code, /box\.LostFocus \+= async/, '文本段失焦要保存');
+  assert.match(code, /\/api\/persona\/block/, '文本段保存要走 block 接口');
+  assert.match(code, /ApplyPreview\(res, false\)/, '保存后直接用返回的 system 更新预览');
+  assert.match(code, /PreviewTokens\.Text = tokens/, 'token 数要跟保存结果同步');
+
+  // 表单 / 开关 / 数值：沿用 /api/persona，成功后重新拉预览。
+  assert.match(code, /SaveConfigurationAsync\("\/api\/persona"/, '表单仍然走 /api/persona');
+  const formSave = code.slice(code.indexOf('private async Task<bool> SaveAllAsync'), code.indexOf('private int CountWarnings'));
+  assert.match(formSave, /await RefreshPreviewAsync\(\)/, '表单保存成功后要重新拉预览');
+
+  // 404 / 离线降级：右栏给可读提示，左栏不被禁用。
+  assert.match(code, /当前内核不支持提示词预览，升级后可用/);
+  assert.match(code, /StatusCode == 404/);
+  assert.match(code, /StatusCode == 0/);
+  assert.doesNotMatch(code, /Workbench\.IsEnabled = false;\s*\/\/\s*预览/, '预览失败不能禁用工作台');
+  assert.match(code, /FlushBeforePresetAsync|FlushEditsAsync/, '预设操作要先冲刷未保存段落');
+
+  // 自定义段落增删。
+  assert.match(code, /SaveConfigurationAsync\("\/api\/persona\/blocks"/, '新增段落要走 /api/persona/blocks');
+  assert.match(code, /Api\.Delete\(_sup\.Url, "\/api\/persona\/blocks\//, '删除段落要走 DELETE /api/persona/blocks/:id');
+  assert.match(code, /BuildCustomBlocksFromPersona/, '预览不可用时要从 /api/persona 的 customBlocks 兜底');
+});
+
 
 test('实现开关唯一收纳到设置高级组，已有专页能力不再重复', () => {
   const settings = readLauncher('Views/SettingsPage.xaml.cs');
@@ -235,18 +341,22 @@ test('所有人设可编辑和打包分享，新版开关默认打开，说明�
   assert.match(code, /OnExportPrompt[\s\S]*ExportPersonaAsync\(true\)/);
   assert.match(code, /\/api\/persona\/export/);
   assert.match(code, /PersonaPackage\.Export/);
-  assert.match(code, /if \(!await SaveAllAsync/);
+  assert.match(code, /FlushBeforePresetAsync|FlushEditsAsync/);
   assert.match(dialog, /public static string Prompt\(/, '另存和改名需要输入框');
   assert.doesNotMatch(xaml, /全部保存/, '人设改为热保存后不该再有保存按钮');
 });
 
 test('人设预设低频操作收进「预设管理」，默认只留应用与创建', () => {
   const xaml = readLauncher('Views/PersonaPage.xaml');
-  assert.match(xaml, /<Expander Header="预设管理" IsExpanded="False"/, '预设管理折叠应默认收起');
-  assert.ok(xaml.indexOf('预设管理') < xaml.indexOf('打包分享'), '打包分享应在预设管理里');
+  const code = readLauncher('Views/PersonaPage.xaml.cs');
+  assert.ok(xaml.includes('x:Name="BtnManagePresets"'), '缺少预设管理入口');
+  assert.match(xaml, /x:Name="PresetManagePanel"[^>]*Visibility="Collapsed"/, '预设管理面板默认收起');
+  assert.match(xaml, /Click="OnTogglePresetManage"/, '预设管理要接展开事件');
+  assert.match(code, /private void OnTogglePresetManage/, '缺少预设管理展开逻辑');
+  assert.ok(xaml.indexOf('预设管理') < xaml.indexOf('打包分享'), '打包分享应在预设管理面板里');
   const defaultRow = xaml.slice(xaml.indexOf('应用选中预设'), xaml.indexOf('预设管理'));
   assert.ok(defaultRow.includes('创建自定义人设'), '默认行应保留创建自定义人设');
-  assert.ok(defaultRow.includes('PresetSaved'), '保存状态应留在默认行');
+  assert.ok(xaml.includes('x:Name="SaveState"'), '已保存状态应留在顶部一行');
   for (const text of ['从文件导入…', '打包分享', '仅分享提示词', '更新此预设', '重命名', '删除预设']) {
     assert.ok(xaml.slice(xaml.indexOf('预设管理')).includes(text), '预设管理缺少：' + text);
   }
@@ -267,6 +377,16 @@ test('人设支持从本地 ZIP 导入，不再有市场来源', () => {
   assert.match(pkg, /IsSymlink/, '导入要拒绝符号链接');
   assert.doesNotMatch(code, /market|Market|OnResetMarket|BtnResetMarket/, '人设页不应再有市场来源分支');
   assert.doesNotMatch(pkg, /PluginMarket|PluginInfo|PluginTrust/, '人设包不应依赖插件市场');
+});
+
+test('人设包保留自定义段落，空数组也不会被省略', () => {
+  const pkg = readLauncher('PersonaPackage.cs');
+  assert.match(pkg, /TryGetProperty\("customBlocks"/, '导入/导出要识别 customBlocks');
+  assert.match(pkg, /result\["customBlocks"\] = blocks/, '空数组也要写回，否则清不掉旧段落');
+  assert.match(pkg, /blocks\.Count >= 10/, '最多 10 段');
+  assert.match(pkg, /\^custom-\[0-9a-f\]\{8\}\$/, '段落 id 要按内核格式校验');
+  assert.match(pkg, /text\.Length > 2000/, '正文超过 2000 字要截断');
+  assert.match(pkg, /blocks\.Add/, '坏条目应被丢弃而不是整包失败');
 });
 
 test('设置页只保留外观/高级/诊断/关于，单列无侧栏', () => {
@@ -545,7 +665,7 @@ test('低频项统一收进“高级”折叠，默认全部收起', () => {
   }
   assert.match(readLauncher('Views/VoiceSendPage.cs'), /new Expander\{Header="高级",IsExpanded=false/,
     '语音页高级折叠应默认收起');
-  assert.match(readLauncher('Views/PersonaPage.xaml'), /Header="身份关系与记忆（高级）"/,
+  assert.match(readLauncher('Views/PersonaPage.xaml'), /Header="身份关系与记忆"/,
     '人设页身份关系与记忆应折叠');
 });
 

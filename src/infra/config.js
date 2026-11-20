@@ -173,6 +173,8 @@ const DEFAULT_CONFIG = {
     // 主人骂她时能不能还嘴（默认关：只许委屈不许骂回去）
     masterRoast: false,
     newBehavior: true,
+    // 提示词画布的自定义段落（标题 + 正文）。空数组 = 提示词与旧版逐字节一致。
+    customBlocks: [],
     // 从已有聊天学到的使用者风格怎么用：adapt=贴合对方习惯，mimic=模仿对方表达。
     // 画像文件不存在时这一项不产生任何提示词。
     styleMode: 'adapt',

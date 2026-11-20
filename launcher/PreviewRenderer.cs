@@ -55,6 +55,9 @@ namespace WhaleLauncher
                 // 页面 Loaded 后还会异步拉一次配置；等它把字段和摘要填出来再截图。
                 if (win.Host.Content is Views.SettingsPage settingsPage)
                     await Task.WhenAny(settingsPage.PreviewLoaded, Task.Delay(9000));
+                // 人设工作台要等表单、预设和最终提示词都读完，右栏才有内容可拍。
+                if (win.Host.Content is Views.ChatPage chatPage)
+                    await Task.WhenAny(chatPage.PreviewLoaded, Task.Delay(9000));
                 await Task.Delay(600);
                 // 分身页有五个分段；功能页有四个页签；设置页可展开高级 / 带搜索词。
                 // 截图时点名叫哪一段，否则只能拍到默认段。
@@ -63,6 +66,7 @@ namespace WhaleLauncher
                     if (win.Host.Content is Views.SelfPage self) self.PreviewSection(section);
                     else if (win.Host.Content is Views.FunctionPage function) function.PreviewSection(section);
                     else if (win.Host.Content is Views.SettingsPage settings) settings.PreviewSection(section);
+                    else if (win.Host.Content is Views.ChatPage chat) await chat.PreviewSectionAsync(section);
                 }
                 await Task.Delay(600);
                 win.UpdateLayout();

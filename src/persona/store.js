@@ -8,6 +8,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { IDENTITY_FIELDS, usesNewPersona } = require('./profile');
 const { upgradeLegacyPersona } = require('./legacy');
+const customBlocks = require('./customBlocks');
 
 const FILE_NAME = 'persona.json';
 
@@ -125,6 +126,7 @@ function save(config, patch) {
     personality: config.persona ? config.persona.personality : undefined,
     background: config.persona ? config.persona.background : undefined,
     customPrompt: config.persona ? config.persona.customPrompt : undefined,
+    customBlocks: config.persona ? config.persona.customBlocks : undefined,
     sourcePreset: config.persona ? config.persona.sourcePreset : undefined,
   };
   for (const k of Object.keys(base)) if (base[k] === undefined) delete base[k];
@@ -197,6 +199,7 @@ const DEFAULTS = {
   // 这两个不写进默认值的话，「恢复默认」就清不掉自定义提示词：
   // 旧值会一直盖在控件人设上面，表现出来就是「点了恢复默认还是没变」。
   customPrompt: '',
+  customBlocks: [],
   sourcePreset: '',
 };
 
@@ -270,6 +273,8 @@ function apply(config, data) {
   }
   if (data.age !== undefined) config.persona.age = Number(data.age) || 22;
   if (data.customPrompt !== undefined) config.persona.customPrompt = String(data.customPrompt || '');
+  // 提示词画布的自定义段落：坏数据在进入提示词前就过滤掉，最多 10 段。
+  if (data.customBlocks !== undefined) config.persona.customBlocks = customBlocks.normalizeBlocks(data.customBlocks);
   // 记下「这份人设是从哪个人设文件导入的」，页面上直接显示，免得用户不知道自己现在用的是哪版
   if (data.sourcePreset !== undefined) config.persona.sourcePreset = String(data.sourcePreset || '');
   return config;
@@ -297,6 +302,8 @@ function summary(config) {
     personality: config.persona.personality,
     background: config.persona.background,
     customPrompt: config.persona.customPrompt || '',
+    // 只做加法：旧启动器不认识的字段会被忽略。
+    customBlocks: customBlocks.normalizeBlocks(config.persona.customBlocks),
     sourcePreset: config.persona.sourcePreset || '',
   };
 }

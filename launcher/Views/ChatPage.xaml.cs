@@ -65,5 +65,15 @@ namespace WhaleLauncher.Views
 
             if (Host.Content is IRefreshable refresh) await refresh.RefreshAsync();
         }
+
+        /// <summary>截图工具用：等当前页（默认人设）把数据读完。</summary>
+        public Task PreviewLoaded => Host.Content is Views.PersonaPage persona
+            ? persona.PreviewLoaded
+            : Task.CompletedTask;
+
+        /// <summary>截图工具用：group = 群聊预览；advanced = 展开风格学习。</summary>
+        public Task PreviewSectionAsync(string key) => Host.Content is Views.PersonaPage persona
+            ? persona.PreviewSectionAsync(key)
+            : Task.CompletedTask;
     }
 }

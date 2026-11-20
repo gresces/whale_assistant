@@ -300,6 +300,10 @@ namespace WhaleLauncher
             }
         }
 
+        /// <summary>本进程启动的内核，或同一端口上已经在健康运行的外部内核，都算可用。</summary>
+        public async Task<bool> KernelReachableAsync()
+            => NodeRunning || await ReadHealthyNodePidAsync(Port) > 0;
+
         public string Url => $"http://127.0.0.1:{Port}";
 
         private async Task<int> ReadHealthyNodePidAsync(int port)
