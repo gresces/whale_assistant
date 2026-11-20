@@ -8,8 +8,11 @@ using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Automation;
 using System.Windows.Controls;
+using System.Windows.Input;
 using System.Windows.Media;
+using System.Windows.Media.Animation;
 using System.Windows.Media.Effects;
+using System.Windows.Threading;
 using Microsoft.Win32;
 
 namespace WhaleLauncher.Views
@@ -47,8 +50,30 @@ namespace WhaleLauncher.Views
 
     public partial class SettingsPage : UserControl, IRefreshable
     {
+        /// <summary>设置搜索里的一行：结果只读当前配置，不复制表单值。</summary>
+        private sealed class SearchEntry
+        {
+            public string Section;
+            public string Label;
+            public string Hint = "";
+            public string[] Keywords = Array.Empty<string>();
+            public Func<string> Summary;
+            public FrameworkElement Target;
+            public Action Reveal;
+        }
+        public enum ViewMode
+        {
+            Full,
+            ModelOnly,
+        }
+
         private readonly RuntimeSupervisor _sup;
         private readonly ConfigSaver _saver;
+        private readonly ViewMode _view;
+        private readonly Action _checkUpdate;
+        private readonly Func<string, UserControl> _pageFactory;
+        private readonly Dictionary<string, UserControl> _subPages = new Dictionary<string, UserControl>();
+        private Button _subPageReturnTarget;
         private readonly PageOperationLifetime _pageLifetime = new PageOperationLifetime();
         private readonly List<Action> _refreshBudgetHints = new List<Action>();
         private long _configurationRevision;
@@ -67,17 +92,71 @@ namespace WhaleLauncher.Views
         private bool _loadedOnline;
         private bool _loadingConfig;     // 全量回填在途，防止载入和定时器双跑
         private DateTime _lastLoad = DateTime.MinValue;
-        public SettingsPage(RuntimeSupervisor sup)
+
+        // ── 设置搜索 / 分组摘要 ─────────────────────────────────
+        private readonly List<SearchEntry> _searchEntries = new List<SearchEntry>();
+        private readonly List<(TextBlock Badge, Func<string> Summary)> _sectionSummaries =
+            new List<(TextBlock, Func<string>)>();
+        private readonly Dictionary<string, FrameworkElement> _fieldRows =
+            new Dictionary<string, FrameworkElement>();
+        private JsonElement _configRoot;
+        private readonly Dictionary<string, JsonElement> _configOverrides =
+            new Dictionary<string, JsonElement>();
+        private StackPanel _searchResultsHost;
+        private readonly List<FrameworkElement> _lastSearchHits = new List<FrameworkElement>();
+        private readonly TaskCompletionSource<bool> _previewLoaded =
+            new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        public Task PreviewLoaded => _previewLoaded.Task;
+        private Expander _advancedExpander;
+        private Action<int> _activateAdvancedTab;
+        private List<(string Path, JsonElement Value)> _undoReset;
+        private DispatcherTimer _undoTimer;
+
+        // 高级 → 高级与其他的出厂值。只用于状态摘要里的「N 项已改」，
+        // 真正写回仍由内核的 /api/config/reset 决定，别拿这份替代恢复逻辑。
+        private static readonly Dictionary<string, object> AdvancedDefaults = new Dictionary<string, object>
+        {
+            ["memory.dialogueBudget"] = 5500,
+            ["env.timezone"] = "",
+            ["server.host"] = "127.0.0.1",
+            ["server.port"] = 8787,
+            ["log.level"] = "info",
+            ["storage.mediaKeepDays"] = 7,
+            ["storage.mediaMaxMB"] = 500,
+        };
+
+        private static readonly string[][] SynonymGroups =
+        {
+            new[] { "通知", "推送", "提醒", "提示" },
+            new[] { "深色", "暗色", "夜间", "跟随系统" },
+            new[] { "代理", "网络", "联网" },
+            new[] { "语音", "识别", "转写", "asr" },
+            new[] { "记忆", "上下文", "回忆" },
+            new[] { "预算", "token", "字数" },
+        };
+        public SettingsPage(RuntimeSupervisor sup, ViewMode view = ViewMode.Full,
+            Action checkUpdate = null, Func<string, UserControl> pageFactory = null)
         {
             InitializeComponent();
             _sup = sup;
+            _view = view;
+            _checkUpdate = checkUpdate;
+            _pageFactory = pageFactory;
             _saver = new ConfigSaver(sup);
+            if (view == ViewMode.ModelOnly)
+            {
+                PageHeader.Visibility = Visibility.Collapsed;
+                PageRoot.Margin = new Thickness(0);
+            }
             BuildOnce();
             Loaded += async (_, __) =>
             {
                 _pageLifetime.Activate();
                 var generation = _pageLifetime.Capture();
                 MainScroll.ScrollToTop();
+                // 页面重新挂载时不要被上一轮 5 秒节流挡住：首次打开常常刚好碰上
+                // ContentControl 换页导致上一轮 generation 失效，否则表单会空白几秒。
+                if (!_configLoaded) _lastLoad = DateTime.MinValue;
                 await RefreshAsync();
                 if (_pageLifetime.IsCurrent(generation))
                     foreach (var refresh in _refreshBudgetHints) refresh();
@@ -88,7 +167,7 @@ namespace WhaleLauncher.Views
         // ── 全部设置清单（启动器是唯一界面）────────────────────────
         private static List<SectionSpec> Specs() => new List<SectionSpec>
         {
-            new SectionSpec { Title = "群聊", Fields =
+            new SectionSpec { Title = "群聊与回复", Fields =
             {
                 new FieldSpec { Path = "group.requireAt", Label = "必须 @ 她才回", Kind = "bool", Hint = "关掉 = 群里不 @ 也会接，但按下面的插话概率抽，不是每条都回" },
                 new FieldSpec { Path = "group.freeChat", Label = "允许她自己插话", Kind = "bool", Hint = "开着时没点名的消息也按概率抽一句；@ 她的不受影响" },
@@ -102,7 +181,7 @@ namespace WhaleLauncher.Views
                 new FieldSpec { Path = "chat.messageSettleMs", Label = "连续消息等待(毫秒)", Kind = "num", Min = 0, Max = 10000, Hint = "私信和群聊共用：最后一条消息后安静这么久再统一处理；默认 1500" },
                 new FieldSpec { Path = "chat.groupMaxBatchWaitMs", Label = "群聊最多等待(毫秒)", Kind = "num", Min = 0, Max = 60000, Hint = "群聊从批次第一条开始计时，到点强制处理；不能被后续消息无限重置；默认 5000" },
             }},
-            new SectionSpec { Title = "微信 · 数据与管道", Fields =
+            new SectionSpec { Title = "微信与发送", Fields =
             {
                 new FieldSpec { Path = "wechat.dbDir", Label = "微信文件保存位置", Kind = "text", Hint = "留空 = 自动找；填到 xwechat_files 这一层" },
                 new FieldSpec { Path = "wechat.staleAfterSec", Label = "多久没消息算去忙(秒)", Kind = "num", Min = 60, Max = 86400 },
@@ -110,7 +189,7 @@ namespace WhaleLauncher.Views
                 new FieldSpec { Path = "wechat.pipelineWorkers", Label = "同时处理几个会话", Kind = "num", Min = 1, Max = 8 },
                 new FieldSpec { Path = "wechat.pipelineQueueLimit", Label = "单个会话最多积压几条", Kind = "num", Min = 1, Max = 32, Hint = "超出就丢掉最早的一条；默认 8" },
             }},
-            new SectionSpec { Title = "联网与链接", Fields =
+            new SectionSpec { Title = "联网与检索", Fields =
             {
                 // 本地搜索强制开启，不再提供“联网搜索”开关；API 搜索在“API 接入”页签里。
                 new FieldSpec { Path = "websearch.city", Label = "搜索城市", Kind = "text" },
@@ -119,7 +198,7 @@ namespace WhaleLauncher.Views
                 new FieldSpec { Path = "links.timeoutMs", Label = "链接超时(毫秒)", Kind = "num", Min = 1000, Max = 30000 },
                 new FieldSpec { Path = "links.cacheMinutes", Label = "链接缓存(分钟)", Kind = "num", Min = 0, Max = 1440 },
             }},
-            new SectionSpec { Title = "对话与维护", Note = "实现与维护选项，不属于角色性格。按需展开调整；原有配置保持，保存后按各项说明生效。", Fields =
+            new SectionSpec { Title = "对话与记忆", Note = "实现与维护选项，不属于角色性格。按需展开调整；原有配置保持，保存后按各项说明生效。", Fields =
             {
                 new FieldSpec { Path = "features.envContext", Label = "提供环境信息", Kind = "bool", Hint = "向模型提供本机环境、时区与已配置地点；关闭后不提供环境块" },
                 new FieldSpec { Path = "features.relations", Label = "加载群聊关系", Kind = "bool", Hint = "按需提供人物关系资料，不改变角色性格" },
@@ -129,7 +208,7 @@ namespace WhaleLauncher.Views
                 new FieldSpec { Path = "features.memorySnapshot", Label = "自动记忆快照", Kind = "bool", Hint = "启动和定时创建备份；关闭不删除已有备份" },
                 new FieldSpec { Path = "features.mediaCleanup", Label = "启动时清理媒体缓存", Kind = "bool", Hint = "按缓存保留策略清理；下次启动生效" },
             }},
-            new SectionSpec { Title = "高级", Note = "改完要重启的项都在这里（对话预算和时区例外，改完立刻生效）。", Fields =
+            new SectionSpec { Title = "高级与其他", Note = "改完要重启的项都在这里（对话预算和时区例外，改完立刻生效）。", Fields =
             {
                 new FieldSpec { Path = "memory.dialogueBudget", Label = "对话预算(token)", Kind = "sliderInput", Min = 2000, Max = 20000, InputMin = 1000, Hint = "每轮带多少对话内容（不含人设）：默认 5,500。记忆和原文按比例分，预算越大带得越多；滑块 2,000–20,000，下面四个胶囊是一键跳档，右边输入框可以填到 1,000 以上。" },
                 new FieldSpec { Path = "env.timezone", Label = "时区", Kind = "text", Hint = "IANA 时区，如 Asia/Shanghai；留空 = 系统时区。日记时间、主动搭话时间段、提醒、朋友圈夜间判断和聊天时间戳都按它算。" },
@@ -144,23 +223,51 @@ namespace WhaleLauncher.Views
         private void BuildOnce()
         {
             SectionsHost.Children.Clear();
+            _searchEntries.Clear();
+            _sectionSummaries.Clear();
 
-            AddSection(BuildModelSection());
-            AddSection(BuildAdminSpellSection());
-            AddSection(BuildAdvancedSection());
+            if (_view == ViewMode.ModelOnly)
+            {
+                AddSection(BuildModelSection());
+                return;
+            }
+
+            // 搜索结果卡固定在内容区最上面；搜索框常驻页头。输入即筛，Esc / 清空恢复。
+            _searchResultsHost = new StackPanel { Visibility = Visibility.Collapsed };
+            SectionsHost.Children.Add(_searchResultsHost);
+
             AddSection(BuildAppearanceSection());
+            AddSection(BuildAdvancedSection());
+            AddSection(BuildEntriesSection());
+            AddSection(BuildAboutSection());
         }
 
-        /// <summary>卡片直接按顺序堆进单列滚动区。</summary>
+        /// <summary>卡片直接按顺序堆进单列滚动区；4px 节奏，卡片之间 12px。</summary>
         private void AddSection(Border card)
         {
-            card.Margin = new Thickness(0, 0, 0, 14);
+            card.Margin = new Thickness(0, 0, 0, 12);
             SectionsHost.Children.Add(card);
         }
 
-        private Border BuildAdminSpellSection()
+        /// <summary>管理员魔咒属于低频项，收进「高级」折叠，不再单独占一张卡。</summary>
+        private StackPanel BuildAdminSpellBlock()
         {
-            var card = Card("管理员魔咒", "主要联系人在微信私聊发魔咒后，可在同一私聊发送管理命令：禁言 群名 / 解除禁言 群名 / 改名 新名字 / 重置记忆 / 清空所有记忆。默认有效 30 分钟。", out var body);
+            var body = new StackPanel { Margin = new Thickness(0, 12, 0, 0) };
+            body.Children.Add(new TextBlock
+            {
+                Text = "管理员魔咒",
+                Style = (Style)FindResource("H2"),
+            });
+            var adminNote = new TextBlock
+            {
+                Text = "主要联系人私聊设置，可在同一私聊发管理命令。",
+                FontSize = 14,
+                LineHeight = 20,
+                TextWrapping = TextWrapping.Wrap,
+                Margin = new Thickness(0, 4, 0, 8),
+            };
+            adminNote.SetResourceReference(TextBlock.ForegroundProperty, "Text2");
+            body.Children.Add(adminNote);
             _adminSpellStatus = new TextBlock { Style = (Style)FindResource("Small") };
             body.Children.Add(_adminSpellStatus);
             var password = new PasswordBox();
@@ -190,24 +297,49 @@ namespace WhaleLauncher.Views
             actions.Children.Add(save);
             actions.Children.Add(clear);
             body.Children.Add(actions);
-            return card;
+            return body;
         }
 
         /// <summary>
-        /// 高级模式：四个胶囊页签直接摆出来，点了才展开那一组；再点同一个页签收起。
-        /// 没有「展开高级设置」这种中间按钮，少一次点击。
+        /// 高级设置只在底部留一个折叠入口，默认收起；里面沿用原来的分组页签，
+        /// 点哪一组才展开哪一组，避免一进设置页就铺满低频项。
         /// </summary>
         private Border BuildAdvancedSection()
         {
-            var card = Card("高级模式", "群聊、微信数据与管道、联网与链接、服务端口。平时不用动，点一下对应页签再改。", out var body);
+            var card = new Border
+            {
+                Style = (Style)FindResource("Card"),
+                Padding = new Thickness(16),
+            };
+            var expander = new Expander
+            {
+                Header = "高级设置",
+                IsExpanded = false,
+            };
+            expander.SetResourceReference(Control.ForegroundProperty, "Text");
+            _advancedExpander = expander;
+            var content = new StackPanel { Margin = new Thickness(0, 8, 0, 0) };
+            expander.Content = content;
+            card.Child = expander;
 
             var strip = new WrapPanel { Margin = new Thickness(0, 0, 0, 0) };
-            body.Children.Add(strip);
+            content.Children.Add(strip);
 
             var specs = Specs();
             var tabs = new Button[specs.Count];
             var panels = new StackPanel[specs.Count];
             var active = -1;
+
+            // 搜索点中某一组时用 Activate：和页签点击不同，这里不能把已展开的组再收起来。
+            void Activate(int idx)
+            {
+                for (var i = 0; i < panels.Length; i++)
+                {
+                    panels[i].Visibility = i == idx ? Visibility.Visible : Visibility.Collapsed;
+                    MarkTab(tabs[i], i == idx);
+                }
+                active = idx;
+            }
 
             void Select(int idx)
             {
@@ -218,18 +350,13 @@ namespace WhaleLauncher.Views
                     active = -1;
                     return;
                 }
-                for (var i = 0; i < panels.Length; i++)
-                {
-                    panels[i].Visibility = i == idx ? Visibility.Visible : Visibility.Collapsed;
-                    MarkTab(tabs[i], i == idx);
-                }
-                active = idx;
+                Activate(idx);
             }
 
             for (var i = 0; i < specs.Count; i++)
             {
                 var spec = specs[i];
-                var tab = MakeTab(spec.Title, out var _);
+                var tab = MakeTab(spec.Title, out var badge);
                 var panel = new StackPanel { Visibility = Visibility.Collapsed, Margin = new Thickness(0, 12, 0, 0) };
                 if (!string.IsNullOrEmpty(spec.Note))
                     panel.Children.Add(new TextBlock
@@ -239,10 +366,18 @@ namespace WhaleLauncher.Views
                         TextWrapping = TextWrapping.Wrap,
                         Margin = new Thickness(0, 0, 0, 8),
                     });
-                foreach (var f in spec.Fields) panel.Children.Add(BuildField(f));
-                // 高级 → 记忆：旧版（3.x）记忆的一键入账，放在「高级」这一组最后。
-                // 启动时其实已经自动迁移，这里是给「服务已经在跑、用户又拖了一份 data 进来」补的入口。
-                if (spec.Title == "高级") panel.Children.Add(BuildMemoryImportBlock());
+                var idx = i;
+                foreach (var f in spec.Fields)
+                {
+                    var row = BuildField(f);
+                    _fieldRows[f.Path] = row;
+                    panel.Children.Add(row);
+                    RegisterEntry(spec.Title, f.Label, f.Hint, FieldKeywords(f), row,
+                        () => DescribeField(f),
+                        () => { expander.IsExpanded = true; Activate(idx); });
+                }
+                // 高级与其他 → 记忆：旧版（3.x）记忆的一键入账，放在这一组最后。
+                if (spec.Title == "高级与其他") panel.Children.Add(BuildMemoryImportBlock());
 
                 // 这一组「恢复默认」：只写回这个页签里的字段，默认值由内核给
                 var foot = new WrapPanel { Margin = new Thickness(0, 10, 0, 0) };
@@ -253,10 +388,17 @@ namespace WhaleLauncher.Views
                 tabs[i] = tab;
                 panels[i] = panel;
                 strip.Children.Add(tab);
-                body.Children.Add(panel);
-                var idx = i;
+                content.Children.Add(panel);
                 tab.Click += (s, e) => Select(idx);
+
+                var sectionTitle = spec.Title;
+                _sectionSummaries.Add((badge, () => SummaryForSection(sectionTitle)));
             }
+
+            var divider = new Border { Height = 1, Background = (Brush)FindResource("Line"), Margin = new Thickness(0, 14, 0, 0) };
+            content.Children.Add(divider);
+            content.Children.Add(BuildAdminSpellBlock());
+            _activateAdvancedTab = Activate;
 
             return card;
         }
@@ -264,17 +406,22 @@ namespace WhaleLauncher.Views
         // ── 外观：深浅色 + 背景图（只影响启动器）────────────────
         private Border BuildAppearanceSection()
         {
-            var card = Card("外观", "只影响启动器界面：深浅色、背景图和它的模糊 / 透明效果。文字直接浮在背景上，自带反色描边；卡片和面板的遮罩可以拉到 0。不会写进 config.json，也不影响她的人设和聊天。", out var body);
+            var card = Card("外观", "只影响启动器界面。", out var body);
 
-            var dark = new CheckBox
-            {
-                Content = "深色模式（关掉就是浅色）",
-                IsChecked = Appearance.IsDark,
-                HorizontalAlignment = HorizontalAlignment.Left,
-                VerticalAlignment = VerticalAlignment.Center
-            };
-            dark.Click += (_, __) => Appearance.SetTheme(dark.IsChecked == true ? "dark" : "light");
-            body.Children.Add(Row("主题", dark, "顶栏右上角的太阳 / 月亮也能快速切换"));
+            // 三态主题：浅色 / 深色 / 跟随系统。默认跟随系统，用户手动选过后不再跟随。
+            var themeBar = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
+            var lightTheme = SegmentedTabs.Make("浅色", (_, __) => Appearance.SetTheme("light"));
+            var darkTheme = SegmentedTabs.Make("深色", (_, __) => Appearance.SetTheme("dark"));
+            var systemTheme = SegmentedTabs.Make("跟随系统", (_, __) => Appearance.SetTheme("system"));
+            systemTheme.ToolTip = "随 Windows 的应用模式实时切换；手动选浅色 / 深色后固定，不再跟随";
+            themeBar.Children.Add(lightTheme);
+            themeBar.Children.Add(darkTheme);
+            themeBar.Children.Add(systemTheme);
+            var themeRow = Row("主题", themeBar, "", false);
+            body.Children.Add(themeRow);
+            RegisterEntry("外观", "主题", "深色 暗色 夜间 跟随系统 系统",
+                new[] { "主题", "深色", "暗色", "夜间", "跟随系统", "外观" }, themeRow,
+                () => Appearance.ThemeDescription, null);
 
             var preview = new Border
             {
@@ -309,7 +456,7 @@ namespace WhaleLauncher.Views
                 MaxWidth = 560,
                 Margin = new Thickness(0, 0, 0, 8)
             };
-            var pick = new Button { Content = "选择图片…", Style = (Style)FindResource("Ghost") };
+            var pick = new Button { Content = "选择图片…", Style = (Style)FindResource("Ghost"), ToolTip = "支持 JPG / PNG / BMP" };
             var clear = new Button { Content = "清除背景", Style = (Style)FindResource("Ghost"), Margin = new Thickness(8, 0, 0, 0) };
             var actions = new WrapPanel { HorizontalAlignment = HorizontalAlignment.Left };
             actions.Children.Add(pick);
@@ -327,8 +474,23 @@ namespace WhaleLauncher.Views
             panel.Children.Add(pathText);
             panel.Children.Add(actions);
             panel.Children.Add(hint);
-            body.Children.Add(Row("背景图片", panel,
-                "支持 JPG / PNG / BMP。有图时顶栏、导航和卡片都会透出背景；文字自带反色柔光，亮图暗图都能看清。", true));
+            var backdropRow = Row("背景图片", panel, "", true);
+            body.Children.Add(backdropRow);
+            RegisterEntry("外观", "背景图片", "背景图 壁纸 图片 填充 模糊 透明度",
+                new[] { "背景", "图片", "壁纸" }, backdropRow,
+                () => Appearance.HasBackdrop ? Path.GetFileName(Appearance.Backdrop) : "纯色背景", null);
+
+            // 外观细节：默认只看主题和背景图入口，调色/模糊等低频项收起。
+            var detailsExpander = new Expander
+            {
+                Header = "外观细节",
+                IsExpanded = false,
+                Margin = new Thickness(0, 12, 0, 0),
+            };
+            detailsExpander.SetResourceReference(Control.ForegroundProperty, "Text");
+            var details = new StackPanel { Margin = new Thickness(0, 8, 0, 0) };
+            detailsExpander.Content = details;
+            body.Children.Add(detailsExpander);
 
             var fit = new ComboBox { Width = 220, HorizontalAlignment = HorizontalAlignment.Left };
             fit.Items.Add("等比裁剪（铺满）");
@@ -340,8 +502,12 @@ namespace WhaleLauncher.Views
                 if (fit.SelectedIndex < 0) return;
                 Appearance.SetBackdropFit(fit.SelectedIndex switch { 1 => "stretch", 2 => "uniform", _ => "fill" });
             };
-            body.Children.Add(Row("背景填充", fit,
-                "等比裁剪会裁掉多余边缘；拉伸会让画面变形；等比完整会在空出来的地方露出主题底色。", true));
+            var fitRow = Row("背景填充", fit, "", true);
+            details.Children.Add(fitRow);
+            RegisterEntry("外观", "背景填充", "背景 铺满 拉伸 留边",
+                new[] { "背景", "填充", "铺满" }, fitRow,
+                () => Appearance.BackdropFit switch { "stretch" => "拉伸铺满", "uniform" => "等比完整", _ => "等比裁剪" },
+                () => detailsExpander.IsExpanded = true);
 
             // 模糊 / 透明度滑块：值直接写进 launcher-ui.json，拖一下就能看到效果。
             var blurValue = ValueLabel();
@@ -362,8 +528,12 @@ namespace WhaleLauncher.Views
                 blurValue.Text = v + " px";
                 Appearance.SetBackdropBlur(v);
             };
-            body.Children.Add(Row("背景模糊", SliderWithValue(blurSlider, blurValue),
-                "0 = 清晰，60 = 最柔；只模糊背景图，文字和卡片保持锐利。", true));
+            var blurRow = Row("背景模糊", SliderWithValue(blurSlider, blurValue), "", true);
+            details.Children.Add(blurRow);
+            RegisterEntry("外观", "背景模糊", "背景 模糊 高斯",
+                new[] { "背景", "模糊" }, blurRow,
+                () => Math.Round(Appearance.BackdropBlur) + " px",
+                () => detailsExpander.IsExpanded = true);
 
             var opacityValue = ValueLabel();
             var opacitySlider = new Slider
@@ -383,8 +553,12 @@ namespace WhaleLauncher.Views
                 opacityValue.Text = v + "%";
                 Appearance.SetBackdropOpacity(1 - v / 100.0);
             };
-            body.Children.Add(Row("背景透明度", SliderWithValue(opacitySlider, opacityValue),
-                "0% = 图片完全不透明，100% = 只看主题底色。图片越透明，底下的主题色越多。", true));
+            var opacityRow = Row("背景透明度", SliderWithValue(opacitySlider, opacityValue), "", true);
+            details.Children.Add(opacityRow);
+            RegisterEntry("外观", "背景透明度", "背景 透明度 透明",
+                new[] { "背景", "透明度" }, opacityRow,
+                () => Math.Round((1 - Appearance.BackdropOpacity) * 100) + "%",
+                () => detailsExpander.IsExpanded = true);
 
             var surfaceValue = ValueLabel();
             var surfaceSlider = new Slider
@@ -404,8 +578,12 @@ namespace WhaleLauncher.Views
                 surfaceValue.Text = v + "%";
                 Appearance.SetSurfaceOpacity(v / 100.0);
             };
-            body.Children.Add(Row("面板不透明度", SliderWithValue(surfaceSlider, surfaceValue),
-                "0% = 文字框完全透明，只留描边；100% = 更实的玻璃。文字自带描边，拉到 0 也能看清。", true));
+            var surfaceRow = Row("面板不透明度", SliderWithValue(surfaceSlider, surfaceValue), "", true);
+            details.Children.Add(surfaceRow);
+            RegisterEntry("外观", "面板不透明度", "面板 卡片 不透明度 玻璃",
+                new[] { "面板", "不透明度", "卡片" }, surfaceRow,
+                () => Math.Round(Appearance.SurfaceOpacity * 100) + "%",
+                () => detailsExpander.IsExpanded = true);
 
             // ── 配色：莫奈取色 + 手动覆盖（顶栏固定，不参与）──
             var monetCheck = new CheckBox
@@ -420,15 +598,31 @@ namespace WhaleLauncher.Views
             var monetPanel = new WrapPanel();
             monetPanel.Children.Add(monetCheck);
             monetPanel.Children.Add(remonet);
-            body.Children.Add(Row("莫奈取色", monetPanel,
-                "从背景图挑主色生成主题色和低饱和遮罩色；下面手选的颜色优先。顶栏固定不参与。", true));
+            var monetRow = Row("莫奈取色", monetPanel, "", true);
+            details.Children.Add(monetRow);
+            RegisterEntry("外观", "莫奈取色", "背景 自动取色 主题色",
+                new[] { "莫奈", "取色", "配色" }, monetRow,
+                () => Appearance.MonetEnabled ? "开" : "关",
+                () => detailsExpander.IsExpanded = true);
 
-            body.Children.Add(Row("主题色", BuildColorRow("accent", "主题色"),
-                "按钮、选中态和强调文字用的颜色。点「自动」就回到莫奈取色。", true));
-            body.Children.Add(Row("遮罩色", BuildColorRow("tint", "遮罩色"),
-                "压在背景图上的统一色调；觉得画面发灰时可以换一个颜色。", true));
-            body.Children.Add(Row("文字色", BuildColorRow("text", "文字色"),
-                "正文和说明文字的颜色；选完后注意和背景的明暗差。", true));
+            var accentRow = Row("主题色", BuildColorRow("accent", "主题色"), "", true);
+            var tintRow = Row("遮罩色", BuildColorRow("tint", "遮罩色"), "", true);
+            var textColorRow = Row("文字色", BuildColorRow("text", "文字色"), "", true);
+            details.Children.Add(accentRow);
+            details.Children.Add(tintRow);
+            details.Children.Add(textColorRow);
+            RegisterEntry("外观", "主题色", "强调色 品牌色 配色",
+                new[] { "主题色", "强调色", "配色" }, accentRow,
+                () => Appearance.AccentOverride.Length > 0 ? Appearance.ToHex(Appearance.EffectiveColor("accent")) : "自动",
+                () => detailsExpander.IsExpanded = true);
+            RegisterEntry("外观", "遮罩色", "背景蒙版 遮罩 配色",
+                new[] { "遮罩色", "蒙版", "配色" }, tintRow,
+                () => Appearance.TintOverride.Length > 0 ? Appearance.ToHex(Appearance.EffectiveColor("tint")) : "自动",
+                () => detailsExpander.IsExpanded = true);
+            RegisterEntry("外观", "文字色", "文字 颜色 配色",
+                new[] { "文字色", "字体颜色", "配色" }, textColorRow,
+                () => Appearance.TextOverride.Length > 0 ? Appearance.ToHex(Appearance.EffectiveColor("text")) : "自动",
+                () => detailsExpander.IsExpanded = true);
 
             var haloCheck = new CheckBox
             {
@@ -437,22 +631,37 @@ namespace WhaleLauncher.Views
                 VerticalAlignment = VerticalAlignment.Center,
             };
             haloCheck.Click += (_, __) => Appearance.SetTextHalo(haloCheck.IsChecked == true);
-            body.Children.Add(Row("文字描边", haloCheck,
-                "只在有背景图时生效；关掉后靠自定义文字色保证可读。", true));
+            var haloRow = Row("文字描边", haloCheck, "", true);
+            details.Children.Add(haloRow);
+            RegisterEntry("外观", "文字描边", "发光 描边 文字",
+                new[] { "文字", "描边", "发光" }, haloRow,
+                () => Appearance.TextHaloEnabled ? "开" : "关",
+                () => detailsExpander.IsExpanded = true);
 
             var resetPalette = new Button { Content = "恢复自动配色", Style = (Style)FindResource("Ghost") };
             resetPalette.Click += (_, __) => Appearance.ResetPalette();
-            body.Children.Add(Row("配色重置", resetPalette,
-                "主题色、遮罩色、文字色退回莫奈 / 主题默认，描边重新打开。", true));
+            var resetPaletteRow = Row("配色重置", resetPalette, "", true);
+            details.Children.Add(resetPaletteRow);
+            RegisterEntry("外观", "配色重置", "恢复自动配色 主题色 遮罩色",
+                new[] { "配色", "重置", "恢复默认" }, resetPaletteRow,
+                () => "自动", () => detailsExpander.IsExpanded = true);
 
+            var hintIsError = false;
+            void PaintTheme()
+            {
+                SegmentedTabs.Mark(lightTheme, Appearance.Theme == "light");
+                SegmentedTabs.Mark(darkTheme, Appearance.Theme == "dark");
+                SegmentedTabs.Mark(systemTheme, Appearance.Theme == "system");
+            }
             void Refresh()
             {
-                dark.IsChecked = Appearance.IsDark;
+                PaintTheme();
                 monetCheck.IsChecked = Appearance.MonetEnabled;
                 haloCheck.IsChecked = Appearance.TextHaloEnabled;
                 monetCheck.IsEnabled = Appearance.HasBackdrop;
                 remonet.IsEnabled = Appearance.HasBackdrop;
                 var bmp = Appearance.LoadBackdrop();
+                var hasBackdrop = bmp != null;
                 img.Source = bmp;
                 img.Opacity = Appearance.BackdropOpacity;
                 if (bmp == null)
@@ -469,15 +678,23 @@ namespace WhaleLauncher.Views
                     }
                     blur.Radius = Appearance.BackdropBlur * 0.35;
                 }
-                img.Visibility = bmp == null ? Visibility.Collapsed : Visibility.Visible;
-                empty.Visibility = bmp == null ? Visibility.Visible : Visibility.Collapsed;
-                clear.IsEnabled = !string.IsNullOrEmpty(Appearance.Backdrop);
+                img.Visibility = hasBackdrop ? Visibility.Visible : Visibility.Collapsed;
+                empty.Visibility = hasBackdrop ? Visibility.Collapsed : Visibility.Visible;
+                preview.Visibility = hasBackdrop ? Visibility.Visible : Visibility.Collapsed;
+                pathText.Visibility = hasBackdrop ? Visibility.Visible : Visibility.Collapsed;
+                clear.Visibility = hasBackdrop ? Visibility.Visible : Visibility.Collapsed;
+                pick.Content = hasBackdrop ? "更换图片…" : "选择图片…";
+                hint.Visibility = (hasBackdrop || hintIsError) && !string.IsNullOrEmpty(hint.Text)
+                    ? Visibility.Visible : Visibility.Collapsed;
+                clear.IsEnabled = hasBackdrop;
                 blurSlider.IsEnabled = Appearance.HasBackdrop;
                 opacitySlider.IsEnabled = Appearance.HasBackdrop;
                 surfaceSlider.IsEnabled = Appearance.HasBackdrop;
                 pathText.Text = string.IsNullOrEmpty(Appearance.Backdrop)
                     ? "当前使用纯色背景。"
                     : "当前：" + Appearance.Backdrop;
+                RefreshSectionSummaries();
+                RefreshSearchIfActive();
             }
 
             pick.Click += (_, __) =>
@@ -486,28 +703,584 @@ namespace WhaleLauncher.Views
                 if (file == null) return;
                 if (Appearance.TrySetBackdrop(file, out var err))
                 {
+                    hintIsError = false;
                     hint.Text = "已应用。";
-                    hint.Foreground = (Brush)FindResource("Dim");
+                    hint.SetResourceReference(TextBlock.ForegroundProperty, "Dim");
                 }
                 else
                 {
+                    hintIsError = true;
                     hint.Text = err;
-                    hint.Foreground = (Brush)FindResource("Bad");
+                    hint.SetResourceReference(TextBlock.ForegroundProperty, "Bad");
                 }
                 Refresh();
             };
 
             clear.Click += (_, __) =>
             {
+                hintIsError = false;
                 Appearance.ClearBackdrop();
-                hint.Text = "已恢复纯色背景。";
-                hint.Foreground = (Brush)FindResource("Dim");
+                hint.Text = "";
                 Refresh();
             };
 
             Appearance.Changed += Refresh;
             Refresh();
             return card;
+        }
+
+        // 官网和赞助入口收进设置 → 关于；链接写死，断网时浏览器自行提示。
+        private const string OfficialSite = "https://bot.zyyc.cc/";
+        private const string SponsorPage = "https://afdian.com/a/Banan1ce";
+
+        private Border BuildEntriesSection()
+        {
+            var card = Card("诊断工具", "检查运行状态、日志与本机数据。", out var body);
+
+            var diagnostic = new Grid();
+            diagnostic.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            diagnostic.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            var diagnosticText = new StackPanel();
+            diagnosticText.Children.Add(new TextBlock { Text = "诊断", Style = (Style)FindResource("H2") });
+            diagnostic.Children.Add(diagnosticText);
+            var diagnosticButton = new Button { Content = "打开诊断", Style = (Style)FindResource("Ghost"), VerticalAlignment = VerticalAlignment.Center };
+            diagnosticButton.Click += (_, __) =>
+            {
+                _subPageReturnTarget = diagnosticButton;
+                OpenSubPage("诊断", "诊断");
+            };
+            Grid.SetColumn(diagnosticButton, 1);
+            diagnostic.Children.Add(diagnosticButton);
+            body.Children.Add(diagnostic);
+            RegisterEntry("诊断工具", "打开诊断", "运行状态、日志、语音识别与通知排查",
+                new[] { "诊断", "日志", "运行状态", "自检", "语音", "识别", "通知", "推送", "内核", "桥接" },
+                diagnostic, () => "运行状态 · 日志 · 本机数据", null);
+
+            return card;
+        }
+
+        private Border BuildAboutSection()
+        {
+            var card = Card("关于", "版本、更新与项目链接。", out var body);
+
+            var version = new Grid { Margin = new Thickness(0, 0, 0, 12) };
+            version.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            version.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            var versionText = new StackPanel();
+            versionText.Children.Add(new TextBlock { Text = "助手", Style = (Style)FindResource("H2") });
+            versionText.Children.Add(new TextBlock
+            {
+                Text = "v" + UpdateManifestService.LocalVersion(_sup.BaseDir),
+                Style = (Style)FindResource("Small"),
+                Margin = new Thickness(0, 2, 0, 0),
+            });
+            version.Children.Add(versionText);
+            if (_checkUpdate != null)
+            {
+                var update = new Button { Content = "检查更新", Style = (Style)FindResource("Ghost"), VerticalAlignment = VerticalAlignment.Center };
+                update.Click += (_, __) => _checkUpdate();
+                Grid.SetColumn(update, 1);
+                version.Children.Add(update);
+            }
+            body.Children.Add(version);
+            RegisterEntry("关于", "版本与更新", "检查更新 升级 版本号",
+                new[] { "版本", "更新", "升级" }, version,
+                () => "v" + UpdateManifestService.LocalVersion(_sup.BaseDir), null);
+
+            var links = new WrapPanel();
+            var website = new Button { Content = "官网", Style = (Style)FindResource("Ghost") };
+            website.Click += (_, __) => OpenExternal(OfficialSite, "打开官网失败");
+            var sponsor = new Button { Content = "赞助", Style = (Style)FindResource("Ghost"), Margin = new Thickness(8, 0, 0, 0) };
+            sponsor.Click += (_, __) => OpenExternal(SponsorPage, "打开赞助页面失败");
+            links.Children.Add(website);
+            links.Children.Add(sponsor);
+            body.Children.Add(links);
+            RegisterEntry("关于", "官网", "项目主页 链接",
+                new[] { "官网", "主页", "网站" }, links, () => "bot.zyyc.cc", null);
+            RegisterEntry("关于", "赞助", "支持 项目 链接",
+                new[] { "赞助", "打赏", "支持" }, links, () => "afdian.com", null);
+
+            return card;
+        }
+
+        private void OpenExternal(string url, string failureTitle)
+        {
+            try
+            {
+                Process.Start(new ProcessStartInfo(url) { UseShellExecute = true });
+            }
+            catch (Exception ex)
+            {
+                AppDialog.Show(Window.GetWindow(this),
+                    failureTitle + "：\n" + ex.Message + "\n\n可以手动在浏览器打开：" + url, failureTitle);
+            }
+        }
+
+        private void OpenSubPage(string key, string title)
+        {
+            if (_pageFactory == null) return;
+            if (!_subPages.TryGetValue(key, out var page))
+            {
+                page = _pageFactory(key);
+                if (page is IEmbeddedPage embedded) embedded.Embedded = true;
+                _subPages[key] = page;
+            }
+            SubPageContent.Content = page;
+            SettingsView.Visibility = Visibility.Collapsed;
+            SubPageView.Visibility = Visibility.Visible;
+        }
+
+        private void OnBackFromSubPage(object sender, RoutedEventArgs e)
+        {
+            SubPageView.Visibility = Visibility.Collapsed;
+            SettingsView.Visibility = Visibility.Visible;
+            var target = _subPageReturnTarget;
+            Dispatcher.BeginInvoke(DispatcherPriority.Input, new Action(() =>
+            {
+                if (target == null || !target.IsVisible) return;
+                target.BringIntoView();
+                target.Focus();
+            }));
+        }
+
+        // ── 设置搜索 ────────────────────────────────────────────
+        private void RegisterEntry(string section, string label, string hint, string[] keywords,
+            FrameworkElement target, Func<string> summary, Action reveal)
+        {
+            if (target == null) return;
+            _searchEntries.Add(new SearchEntry
+            {
+                Section = section,
+                Label = label,
+                Hint = hint ?? "",
+                Keywords = keywords ?? Array.Empty<string>(),
+                Target = target,
+                Summary = summary ?? (() => ""),
+                Reveal = reveal,
+            });
+        }
+
+        private static string[] FieldKeywords(FieldSpec f)
+        {
+            // 同一组的关键词让「网络」「记忆」这类用户词也能覆盖组内字段。
+            var section = f.Path.StartsWith("group.", StringComparison.Ordinal) ? "群聊 群 回复 @"
+                : f.Path.StartsWith("wechat.", StringComparison.Ordinal) ? "微信 发送 通知 推送 消息"
+                : f.Path.StartsWith("websearch.", StringComparison.Ordinal) || f.Path.StartsWith("links.", StringComparison.Ordinal)
+                    ? "网络 联网 代理 搜索 链接"
+                : f.Path.StartsWith("features.", StringComparison.Ordinal) ? "功能 记忆 上下文"
+                : "高级 其他 重启";
+            var extra = f.Path switch
+            {
+                "memory.dialogueBudget" => " 预算 token 记忆 上下文 对话",
+                "env.timezone" => " 时区 时间",
+                "server.host" or "server.port" => " 端口 网络 代理",
+                "log.level" => " 日志 调试 排错",
+                _ => "",
+            };
+            return (section + extra).Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        }
+
+        private string DescribeField(FieldSpec f)
+        {
+            var value = GetConfigValue(f.Path);
+            if (value.ValueKind == JsonValueKind.Undefined || value.ValueKind == JsonValueKind.Null) return "—";
+            switch (f.Kind)
+            {
+                case "bool":
+                    return value.ValueKind == JsonValueKind.True ? "开" : "关";
+                case "num":
+                case "slider":
+                case "sliderInput":
+                    if (value.ValueKind != JsonValueKind.Number) return "—";
+                    var number = value.GetDouble();
+                    var text = f.IsInt || f.Kind != "num"
+                        ? Math.Round(number).ToString("N0")
+                        : number.ToString("0.###");
+                    return text + (f.Unit ?? "");
+                case "multiline":
+                    return value.ValueKind == JsonValueKind.Array
+                        ? value.GetArrayLength() + " 项"
+                        : (string.IsNullOrWhiteSpace(value.ToString()) ? "未设置" : "已填写");
+                default:
+                    if (value.ValueKind == JsonValueKind.Array) return value.GetArrayLength() + " 项";
+                    if (value.ValueKind != JsonValueKind.String) return value.ToString();
+                    var str = value.GetString() ?? "";
+                    return str.Length == 0 ? "未设置" : str;
+            }
+        }
+
+        private string SummaryForSection(string section)
+        {
+            switch (section)
+            {
+                case "群聊与回复":
+                    return GetConfigBool("group.requireAt", true) ? "@ 才回" : "全部回复";
+                case "微信与发送":
+                {
+                    var bg = GetConfigBool("wechat.bgSend.enabled", GetConfigBool("wechat.backgroundSend", false));
+                    if (!bg) return "仅前台";
+                    return GetConfigBool("wechat.bgSend.fallbackToForeground", true) ? "自动发送" : "后台严格";
+                }
+                case "联网与检索":
+                    return GetConfigBool("links.enabled", true) ? "本地搜索 · 开" : "本地搜索 · 开 · 链接关";
+                case "对话与记忆":
+                    return "预算 " + GetConfigLong("memory.dialogueBudget", 5500).ToString("N0");
+                case "高级与其他":
+                {
+                    var changed = 0;
+                    foreach (var pair in AdvancedDefaults)
+                        if (!ValueEqualsDefault(GetConfigValue(pair.Key), pair.Value)) changed++;
+                    return changed == 0 ? "默认值" : changed + " 项已改";
+                }
+                default:
+                    return "";
+            }
+        }
+
+        private static bool ValueEqualsDefault(JsonElement value, object fallback)
+        {
+            if (value.ValueKind == JsonValueKind.Undefined || value.ValueKind == JsonValueKind.Null)
+                return true;   // 配置里没有这一项 = 用默认值
+            switch (fallback)
+            {
+                case string s:
+                    return value.ValueKind == JsonValueKind.String && string.Equals(value.GetString(), s, StringComparison.Ordinal);
+                case int n:
+                    return value.ValueKind == JsonValueKind.Number && Math.Abs(value.GetDouble() - n) < 0.001;
+                case double d:
+                    return value.ValueKind == JsonValueKind.Number && Math.Abs(value.GetDouble() - d) < 0.001;
+                case bool b:
+                    return (value.ValueKind == JsonValueKind.True) == b;
+                default:
+                    return false;
+            }
+        }
+
+        private JsonElement GetConfigValue(string dotted)
+        {
+            if (_configOverrides.TryGetValue(dotted, out var overridden)) return overridden;
+            var cur = _configRoot;
+            foreach (var part in dotted.Split('.'))
+            {
+                if (cur.ValueKind != JsonValueKind.Object || !cur.TryGetProperty(part, out var next)) return default;
+                cur = next;
+            }
+            return cur;
+        }
+
+        private bool GetConfigBool(string dotted, bool fallback = false)
+        {
+            var value = GetConfigValue(dotted);
+            if (value.ValueKind == JsonValueKind.True) return true;
+            if (value.ValueKind == JsonValueKind.False) return false;
+            if (value.ValueKind == JsonValueKind.String) return string.Equals(value.GetString(), "true", StringComparison.OrdinalIgnoreCase);
+            return fallback;
+        }
+
+        private long GetConfigLong(string dotted, long fallback)
+        {
+            var value = GetConfigValue(dotted);
+            return value.ValueKind == JsonValueKind.Number && value.TryGetInt64(out var n) ? n : fallback;
+        }
+
+        private void RefreshSectionSummaries()
+        {
+            foreach (var (badge, summary) in _sectionSummaries)
+            {
+                if (badge == null) continue;
+                try { badge.Text = summary(); }
+                catch { badge.Text = ""; }
+            }
+        }
+
+        /// <summary>总开关关闭时，把依赖它的子项置灰（并在行上说明原因）。</summary>
+        private void RefreshFieldState()
+        {
+            void Set(string path, bool enabled, string reason)
+            {
+                if (!_fieldRows.TryGetValue(path, out var row)) return;
+                row.IsEnabled = enabled;
+                row.ToolTip = enabled ? null : reason;
+                ToolTipService.SetShowOnDisabled(row, !enabled);
+            }
+
+            var requireAt = GetConfigBool("group.requireAt", true);
+            var freeChat = GetConfigBool("group.freeChat", false);
+            var links = GetConfigBool("links.enabled", true);
+            Set("group.masterAlwaysReply", requireAt, "已设为回复全部消息，不需要这个例外");
+            Set("group.freeChat", requireAt, "只回 @ 时不会对未点名的消息插话");
+            Set("group.freeChatChance", requireAt && freeChat,
+                requireAt ? "先打开「允许她自己插话」" : "只回 @ 时插话概率不生效");
+            Set("links.timeoutMs", links, "先打开「解析聊天里的链接」");
+            Set("links.cacheMinutes", links, "先打开「解析聊天里的链接」");
+        }
+
+        private void OnSearchChanged(object sender, TextChangedEventArgs e)
+        {
+            if (SearchPlaceholder != null)
+                SearchPlaceholder.Visibility = string.IsNullOrEmpty(SettingsSearch.Text) ? Visibility.Visible : Visibility.Collapsed;
+            RebuildSearchResults(scrollTop: true);
+        }
+
+        private void OnSearchKeyDown(object sender, KeyEventArgs e)
+        {
+            if (e.Key != Key.Escape) return;
+            SettingsSearch.Clear();
+            Keyboard.ClearFocus();
+            e.Handled = true;
+        }
+
+        private void RefreshSearchIfActive()
+        {
+            if (SettingsSearch != null && !string.IsNullOrEmpty(SettingsSearch.Text)) RebuildSearchResults();
+        }
+
+        private void RebuildSearchResults(bool scrollTop = false)
+        {
+            if (_searchResultsHost == null) return;
+            _searchResultsHost.Children.Clear();
+            _lastSearchHits.Clear();
+            var query = (SettingsSearch?.Text ?? "").Trim();
+            if (query.Length == 0)
+            {
+                _searchResultsHost.Visibility = Visibility.Collapsed;
+                return;
+            }
+
+            var groups = ExpandSearch(query);
+            var hits = _searchEntries
+                .Where(entry => groups.All(group => group.Any(term => Matches(entry, term))))
+                .OrderBy(entry => HitScore(entry, groups))
+                .ThenBy(entry => entry.Section, StringComparer.Ordinal)
+                .ThenBy(entry => entry.Label, StringComparer.Ordinal)
+                .Take(40)
+                .ToList();
+
+            var card = Card("搜索", hits.Count == 0 ? "" : hits.Count + " 项", out var body);
+            if (hits.Count == 0)
+            {
+                body.Children.Add(new TextBlock
+                {
+                    Text = "没有匹配的设置项",
+                    Style = (Style)FindResource("Small"),
+                    Margin = new Thickness(0, 2, 0, 2),
+                });
+            }
+            else
+            {
+                foreach (var hit in hits)
+                {
+                    var row = BuildSearchHit(hit);
+                    _lastSearchHits.Add(row);
+                    body.Children.Add(row);
+                }
+            }
+            _searchResultsHost.Children.Add(card);
+            _searchResultsHost.Visibility = Visibility.Visible;
+            if (scrollTop) MainScroll.ScrollToTop();
+        }
+
+        private static List<string[]> ExpandSearch(string query)
+        {
+            var parts = query.Split(new[] { ' ', '\t', '，', ',' }, StringSplitOptions.RemoveEmptyEntries);
+            var groups = new List<string[]>();
+            foreach (var part in parts)
+            {
+                var synonyms = SynonymGroups.FirstOrDefault(group =>
+                    group.Any(term => part.IndexOf(term, StringComparison.OrdinalIgnoreCase) >= 0));
+                groups.Add(synonyms == null ? new[] { part } : synonyms.Concat(new[] { part }).Distinct().ToArray());
+            }
+            return groups;
+        }
+
+        private static bool Matches(SearchEntry entry, string term)
+        {
+            if (term.Length == 0) return true;
+            return entry.Label.IndexOf(term, StringComparison.OrdinalIgnoreCase) >= 0
+                || entry.Hint.IndexOf(term, StringComparison.OrdinalIgnoreCase) >= 0
+                || entry.Section.IndexOf(term, StringComparison.OrdinalIgnoreCase) >= 0
+                || entry.Keywords.Any(keyword => keyword.IndexOf(term, StringComparison.OrdinalIgnoreCase) >= 0);
+        }
+
+        private static int HitScore(SearchEntry entry, List<string[]> groups)
+        {
+            var first = groups.Count > 0 ? groups[0][0] : "";
+            if (entry.Label.Equals(first, StringComparison.OrdinalIgnoreCase)) return 0;
+            if (entry.Label.StartsWith(first, StringComparison.OrdinalIgnoreCase)) return 1;
+            if (entry.Label.IndexOf(first, StringComparison.OrdinalIgnoreCase) >= 0) return 2;
+            return 3;
+        }
+
+        private FrameworkElement BuildSearchHit(SearchEntry entry)
+        {
+            var row = new Border
+            {
+                Background = Brushes.Transparent,
+                CornerRadius = new CornerRadius(4),
+                Padding = new Thickness(8, 6, 8, 6),
+                HorizontalAlignment = HorizontalAlignment.Stretch,
+                Margin = new Thickness(0, 1, 0, 1),
+                Cursor = Cursors.Hand,
+            };
+            row.MouseEnter += (_, __) =>
+            {
+                if (!ReferenceEquals(_highlightTarget, row))
+                    row.Background = (Brush)FindResource("Hover");
+            };
+            row.MouseLeave += (_, __) =>
+            {
+                if (!ReferenceEquals(_highlightTarget, row))
+                    row.Background = Brushes.Transparent;
+            };
+            var grid = new Grid();
+            grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(112) });
+            grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(12) });
+            grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(12) });
+            grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(260) });
+            var section = new TextBlock
+            {
+                Text = entry.Section,
+                Style = (Style)FindResource("Small"),
+                VerticalAlignment = VerticalAlignment.Center,
+                TextTrimming = TextTrimming.CharacterEllipsis,
+            };
+            var dot1 = new TextBlock { Text = "·", Style = (Style)FindResource("Small"), VerticalAlignment = VerticalAlignment.Center };
+            var label = new TextBlock
+            {
+                Text = entry.Label,
+                Foreground = (Brush)FindResource("Text"),
+                FontSize = 14,
+                VerticalAlignment = VerticalAlignment.Center,
+                TextTrimming = TextTrimming.CharacterEllipsis,
+            };
+            var dot2 = new TextBlock { Text = "·", Style = (Style)FindResource("Small"), VerticalAlignment = VerticalAlignment.Center };
+            var summary = new TextBlock
+            {
+                Text = SafeSummary(entry),
+                Style = (Style)FindResource("Small"),
+                VerticalAlignment = VerticalAlignment.Center,
+                TextTrimming = TextTrimming.CharacterEllipsis,
+                TextAlignment = TextAlignment.Right,
+            };
+            Grid.SetColumn(dot1, 1);
+            Grid.SetColumn(label, 2);
+            Grid.SetColumn(dot2, 3);
+            Grid.SetColumn(summary, 4);
+            grid.Children.Add(section);
+            grid.Children.Add(dot1);
+            grid.Children.Add(label);
+            grid.Children.Add(dot2);
+            grid.Children.Add(summary);
+            row.Child = grid;
+            row.MouseLeftButtonUp += (_, __) => ActivateSearchEntry(entry);
+            return row;
+        }
+
+        private static string SafeSummary(SearchEntry entry)
+        {
+            try { return entry.Summary() ?? ""; }
+            catch { return "—"; }
+        }
+
+        private void ActivateSearchEntry(SearchEntry entry, FrameworkElement source = null)
+        {
+            try { entry.Reveal?.Invoke(); } catch { }
+            // 等折叠面板 / 页签真正展开后再算滚动位置。
+            Dispatcher.BeginInvoke(DispatcherPriority.Loaded, new Action(() =>
+            {
+                UpdateLayout();
+                var target = entry.Target;
+                if (target == null) return;
+                try
+                {
+                    var point = target.TranslatePoint(new Point(0, 0), SectionsHost);
+                    MainScroll.ScrollToVerticalOffset(Math.Max(0, MainScroll.VerticalOffset + point.Y - 16));
+                }
+                catch
+                {
+                    target.BringIntoView();
+                }
+                HighlightTarget(target);
+            }));
+        }
+
+        private FrameworkElement _highlightTarget;
+
+        /// <summary>背景色渐变 1.5 秒；不改控件自身样式，也不影响主题画刷。</summary>
+        private void HighlightTarget(FrameworkElement target)
+        {
+            Brush brush;
+            Action clear;
+            if (target is Panel panel)
+            {
+                var accent = (SolidColorBrush)FindResource("AccentSoft");
+                brush = new SolidColorBrush(accent.Color);
+                panel.Background = brush;
+                clear = () => { if (ReferenceEquals(panel.Background, brush)) panel.ClearValue(Panel.BackgroundProperty); };
+            }
+            else if (target is Border border)
+            {
+                var accent = (SolidColorBrush)FindResource("AccentSoft");
+                brush = new SolidColorBrush(accent.Color);
+                border.Background = brush;
+                clear = () => { if (ReferenceEquals(border.Background, brush)) border.ClearValue(Border.BackgroundProperty); };
+            }
+            else if (target is Control control)
+            {
+                var accent = (SolidColorBrush)FindResource("AccentSoft");
+                brush = new SolidColorBrush(accent.Color);
+                control.Background = brush;
+                clear = () => { if (ReferenceEquals(control.Background, brush)) control.ClearValue(Control.BackgroundProperty); };
+            }
+            else return;
+
+            _highlightTarget = target;
+            var animation = new ColorAnimation
+            {
+                To = Colors.Transparent,
+                BeginTime = TimeSpan.FromMilliseconds(900),
+                Duration = TimeSpan.FromMilliseconds(600),
+                FillBehavior = FillBehavior.Stop,
+            };
+            animation.Completed += (_, __) =>
+            {
+                clear();
+                if (ReferenceEquals(_highlightTarget, target)) _highlightTarget = null;
+            };
+            brush.BeginAnimation(SolidColorBrush.ColorProperty, animation);
+        }
+
+        /// <summary>截图工具用：输入查询并高亮第一条命中（不滚动，保证结果列表也在画面里）。</summary>
+        public void PreviewSearch(string query)
+        {
+            SettingsSearch.Text = query;
+            UpdateLayout();
+            if (_lastSearchHits.Count > 0) HighlightTarget(_lastSearchHits[0]);
+        }
+
+        /// <summary>截图工具用：advanced = 展开高级并停在第一组；search:xxx = 搜索并高亮首条。</summary>
+        public void PreviewSection(string key)
+        {
+            if (string.IsNullOrEmpty(key)) return;
+            if (key.StartsWith("search:", StringComparison.Ordinal))
+            {
+                PreviewSearch(key.Substring("search:".Length));
+                return;
+            }
+            if (key == "advanced")
+            {
+                if (_advancedExpander != null) _advancedExpander.IsExpanded = true;
+                _activateAdvancedTab?.Invoke(0);
+                MainScroll.ScrollToTop();
+                return;
+            }
+            if (key == "search-budget")
+            {
+                PreviewSearch("预算");
+                return;
+            }
+            if (key == "diagnostics") OpenSubPage("诊断", "诊断");
         }
 
         // ── 卡片与行 ────────────────────────────────────────────
@@ -522,7 +1295,18 @@ namespace WhaleLauncher.Views
             var stack = new StackPanel();
             stack.Children.Add(new TextBlock { Text = title, Style = (Style)FindResource("H2") });
             if (!string.IsNullOrEmpty(note))
-                stack.Children.Add(new TextBlock { Text = note, Style = (Style)FindResource("Small"), Margin = new Thickness(0, 6, 0, 0), TextWrapping = TextWrapping.Wrap });
+            {
+                var noteText = new TextBlock
+                {
+                    Text = note,
+                    FontSize = 14,
+                    LineHeight = 20,
+                    TextWrapping = TextWrapping.Wrap,
+                    Margin = new Thickness(0, 4, 0, 0),
+                };
+                noteText.SetResourceReference(TextBlock.ForegroundProperty, "Text2");
+                stack.Children.Add(noteText);
+            }
             body = new StackPanel { Margin = new Thickness(0, 10, 0, 0) };
             stack.Children.Add(body);
             border.Child = stack;
@@ -602,7 +1386,7 @@ namespace WhaleLauncher.Views
 
         private Grid Row(string label, FrameworkElement control, string hint, bool top = false, double labelWidth = 150)
         {
-            var grid = new Grid { Margin = new Thickness(0, 0, 0, 8) };
+            var grid = new Grid { Margin = new Thickness(0, 0, 0, 12) };
             grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(labelWidth) });
             grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
             grid.Children.Add(new TextBlock
@@ -1080,7 +1864,7 @@ namespace WhaleLauncher.Views
                         var caption = new TextBlock
                         {
                             Text = tier.Name + " " + tier.Value.ToString("N0"),
-                            FontSize = 11.5,
+                            FontSize = 12,
                             VerticalAlignment = VerticalAlignment.Center,
                         };
                         var pill = new Border
@@ -1130,9 +1914,18 @@ namespace WhaleLauncher.Views
                         {
                             // ±5% 以内算「就是这一档」，拖到别处就四个都不亮，避免错觉
                             var active = Math.Abs(v - pill.Value) <= Math.Max(150, pill.Value * 0.05);
-                            pill.Box.Background = active ? (Brush)FindResource("AccentDim") : Brushes.Transparent;
-                            pill.Box.BorderBrush = active ? (Brush)FindResource("Accent") : (Brush)FindResource("Line");
-                            pill.Label.Foreground = active ? (Brush)FindResource("Text") : (Brush)FindResource("Text2");
+                            if (active)
+                            {
+                                pill.Box.SetResourceReference(Border.BackgroundProperty, "AccentDim");
+                                pill.Box.SetResourceReference(Border.BorderBrushProperty, "Accent");
+                                pill.Label.SetResourceReference(TextBlock.ForegroundProperty, "Text");
+                            }
+                            else
+                            {
+                                pill.Box.Background = Brushes.Transparent;
+                                pill.Box.SetResourceReference(Border.BorderBrushProperty, "Line");
+                                pill.Label.SetResourceReference(TextBlock.ForegroundProperty, "Text2");
+                            }
                         }
                     }
 
@@ -1299,6 +2092,14 @@ namespace WhaleLauncher.Views
             var res = secret ? await _saver.SaveSecretAsync(path, () => (string)build())
                 : await _saver.SaveAsync(() => new Dictionary<string, object> { [path] = build() });
             if (res.Ok && revision == _configurationRevision) _dirtyFields.Remove(path);
+            if (res.Ok && !secret)
+            {
+                // 写回一份乐观快照：不必等 5 秒轮询，分组摘要和搜索结果立刻用新值。
+                try { _configOverrides[path] = JsonSerializer.SerializeToElement(build()); } catch { }
+                RefreshSectionSummaries();
+                RefreshFieldState();
+                RefreshSearchIfActive();
+            }
             if (_pageLifetime.IsCurrent(generation))
                 StatusText.Text = res.Ok
                     ? path + " 已保存 " + DateTime.Now.ToString("HH:mm:ss")
@@ -1371,6 +2172,15 @@ namespace WhaleLauncher.Views
                 "恢复默认", okText: "恢复默认"))
                 return;
 
+            // 先留一份改前的值，恢复默认成功后给「撤销」，不用让用户自己去记。
+            var before = new List<(string Path, JsonElement Value)>();
+            foreach (var path in list)
+            {
+                var value = GetConfigValue(path);
+                if (value.ValueKind != JsonValueKind.Undefined)
+                    before.Add((path, value.Clone()));
+            }
+
             var res = await _sup.SaveConfigurationAsync("/api/config/reset", new { paths = list });
             if (!res.Ok)
             {
@@ -1380,9 +2190,53 @@ namespace WhaleLauncher.Views
 
             var unknown = res.Prop("unknown");
             var missed = unknown.ValueKind == JsonValueKind.Array ? unknown.GetArrayLength() : 0;
-            StatusText.Text = "「" + title + "」已恢复默认（" + list.Count + " 项）"
+            var message = "「" + title + "」已恢复默认（" + list.Count + " 项）"
                 + (missed > 0 ? "，其中 " + missed + " 项不是可恢复项" : "");
+            StatusText.Text = message;
+            if (before.Count > 0) ShowUndo(before);
+            _configOverrides.Clear();
             _lastLoad = DateTime.MinValue;   // 绕过节流，立刻把默认值刷回表单
+            await LoadConfigAsync();
+        }
+
+        private void ShowUndo(List<(string Path, JsonElement Value)> before)
+        {
+            _undoReset = before;
+            UndoText.Text = "恢复默认前的内容还留着 · 可以撤销";
+            UndoBar.Visibility = Visibility.Visible;
+            if (_undoTimer == null)
+            {
+                _undoTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(12) };
+                _undoTimer.Tick += (_, __) => HideUndo();
+            }
+            _undoTimer.Stop();
+            _undoTimer.Start();
+        }
+
+        private void HideUndo()
+        {
+            _undoTimer?.Stop();
+            _undoReset = null;
+            if (UndoBar != null) UndoBar.Visibility = Visibility.Collapsed;
+        }
+
+        private async void OnUndoReset(object sender, RoutedEventArgs e)
+        {
+            var items = _undoReset;
+            if (items == null || items.Count == 0) { HideUndo(); return; }
+            HideUndo();
+            var patch = new Dictionary<string, object>();
+            foreach (var (path, value) in items)
+                patch[path] = value;
+            var res = await _sup.PatchConfigurationAsync(patch);
+            if (!res.Ok)
+            {
+                StatusText.Text = "撤销失败：" + Api.Message(res);
+                return;
+            }
+            StatusText.Text = "已撤销恢复默认（" + items.Count + " 项）";
+            _configOverrides.Clear();
+            _lastLoad = DateTime.MinValue;
             await LoadConfigAsync();
         }
 
@@ -1392,7 +2246,7 @@ namespace WhaleLauncher.Views
 
         private Button MakeTab(string text, out TextBlock badge)
         {
-            badge = new TextBlock { FontSize = 10, Margin = new Thickness(6, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center };
+            badge = new TextBlock { FontSize = 12, Margin = new Thickness(6, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center };
             badge.SetResourceReference(TextBlock.ForegroundProperty, "Dim");
             var stack = new StackPanel { Orientation = Orientation.Horizontal };
             stack.Children.Add(new TextBlock { Text = text, VerticalAlignment = VerticalAlignment.Center });
@@ -1443,30 +2297,43 @@ namespace WhaleLauncher.Views
 
         private Border BuildModelSection()
         {
-            var card = Card("API 接入", "聊天、看图、语音识别、搜索分页签。聊天模型自己能看图时，看图模型自动跟随；语音识别关闭后不下载、不请求；搜索 API 只有一个总开关，关闭会清空列表并删除搜索 Key。", out var body);
+            var card = Card("API 接入", "聊天模型连接。", out var body);
 
-            var chatTab = MakeTab("聊天（文本）", out var chatBadge);
             var visionTab = MakeTab("看图（视觉）", out var visionBadge);
             var voiceTab = MakeTab("语音（识别）", out var voiceBadge);
             var searchTab = MakeTab("搜索", out var searchBadge);
-            var strip = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 0, 0, 14) };
-            strip.Children.Add(chatTab);
+            var strip = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 0, 0, 12) };
             strip.Children.Add(visionTab);
             strip.Children.Add(voiceTab);
             strip.Children.Add(searchTab);
-            body.Children.Add(strip);
 
             var chatPanel = new StackPanel();
             var visionPanel = new StackPanel { Visibility = Visibility.Collapsed };
             var voicePanel = new StackPanel { Visibility = Visibility.Collapsed };
             var searchPanel = new StackPanel { Visibility = Visibility.Collapsed };
             body.Children.Add(chatPanel);
-            body.Children.Add(visionPanel);
-            body.Children.Add(voicePanel);
-            body.Children.Add(searchPanel);
 
-            var tabs = new[] { chatTab, visionTab, voiceTab, searchTab };
-            var panels = new[] { chatPanel, visionPanel, voicePanel, searchPanel };
+            // 采样、独立模型与 Key 都属于低频项：默认只看聊天模型，其余收进底部一个折叠。
+            var advancedExpander = new Expander
+            {
+                Header = "高级",
+                IsExpanded = false,
+                Margin = new Thickness(0, 12, 0, 0),
+            };
+            advancedExpander.SetResourceReference(Control.ForegroundProperty, "Text");
+            var advancedBody = new StackPanel { Margin = new Thickness(0, 8, 0, 0) };
+            advancedExpander.Content = advancedBody;
+            body.Children.Add(advancedExpander);
+            advancedBody.Children.Add(new TextBlock
+            {
+                Text = "看图 / 语音 / 搜索默认跟随聊天模型。",
+                Style = (Style)FindResource("Small"),
+                TextWrapping = TextWrapping.Wrap,
+                Margin = new Thickness(0, 0, 0, 8),
+            });
+
+            var tabs = new[] { visionTab, voiceTab, searchTab };
+            var panels = new[] { visionPanel, voicePanel, searchPanel };
             void SelectTab(int idx)
             {
                 for (var i = 0; i < panels.Length; i++)
@@ -1475,10 +2342,9 @@ namespace WhaleLauncher.Views
                     MarkTab(tabs[i], i == idx);
                 }
             }
-            chatTab.Click += (s, e) => SelectTab(0);
-            visionTab.Click += (s, e) => SelectTab(1);
-            voiceTab.Click += (s, e) => SelectTab(2);
-            searchTab.Click += (s, e) => SelectTab(3);
+            visionTab.Click += (s, e) => SelectTab(0);
+            voiceTab.Click += (s, e) => SelectTab(1);
+            searchTab.Click += (s, e) => SelectTab(2);
             SelectTab(0);
 
             // 两组控件先都建出来：换聊天模型时要同步刷新看图的提示和角标
@@ -1612,7 +2478,6 @@ namespace WhaleLauncher.Views
                         visionBadge.Text = "已指定";
                     }
                 }
-                chatBadge.Text = model.Text.Trim().Length > 0 ? "" : "";
             }
 
             // 老设置可能只存了 vision.model 没存 vision.provider：从模型名反推是哪家的。
@@ -1761,29 +2626,35 @@ namespace WhaleLauncher.Views
             visionKey.LostFocus += async (s, e) => { if (visionKey.Password.Length > 0) await AutoSaveVisionAsync(); };
 
             // ── 聊天面板 ────────────────────────────────────────
+            chatPanel.Children.Add(new TextBlock
+            {
+                Text = "聊天模型",
+                Style = (Style)FindResource("H2"),
+                Margin = new Thickness(0, 0, 0, 10),
+            });
             chatPanel.Children.Add(Row("模型服务", cmb, "", false, ModelLabel));
             chatPanel.Children.Add(Row("接口地址", baseUrl, "", false, ModelLabel));
-            chatPanel.Children.Add(Row("模型名", model, "点下拉直接选；没有的型号也可以自己输入", false, ModelLabel));
-            chatPanel.Children.Add(Row("API Key", chatKeyPanel, "留空表示不改；已保存的 Key 以首尾各两位显示", false, ModelLabel));
+            chatPanel.Children.Add(Row("模型名", model, "", false, ModelLabel));
+            chatPanel.Children.Add(Row("API Key", chatKeyPanel, "留空表示不改。", false, ModelLabel));
             var connectionNote = new Border { CornerRadius = new CornerRadius(8), Padding = new Thickness(12, 10, 12, 10),
                 Margin = new Thickness(0, 0, 0, 12), BorderThickness = new Thickness(1) };
             connectionNote.SetResourceReference(Border.BackgroundProperty, "Hover");
             connectionNote.SetResourceReference(Border.BorderBrushProperty, "Accent");
-            connectionNote.Child = new TextBlock { Text = "连接小贴士：如果回复总是重复一句话、答非所问，或像在“装傻”，API 可能没有连接成功。没填 API Key 时会使用演示回复；填好后请点击“测试连接”，检查 Key、接口地址和模型名（本地免 Key 模型除外）。",
+            connectionNote.Child = new TextBlock { Text = "回复异常时先点「测试连通」。",
                 Style = (Style)FindResource("Small"), TextWrapping = TextWrapping.Wrap };
             chatPanel.Children.Add(connectionNote);
 
             var chatDivider = new Border { Height = 1, Margin = new Thickness(0, 4, 0, 12) };
             chatDivider.SetResourceReference(Border.BackgroundProperty, "Line");
-            chatPanel.Children.Add(chatDivider);
-            chatPanel.Children.Add(new TextBlock { Text = "采样", Style = (Style)FindResource("Label"), Margin = new Thickness(0, 0, 0, 8) });
-            chatPanel.Children.Add(TwoCol(
+            advancedBody.Children.Add(chatDivider);
+            advancedBody.Children.Add(new TextBlock { Text = "采样", Style = (Style)FindResource("H2"), Margin = new Thickness(0, 0, 0, 8) });
+            advancedBody.Children.Add(TwoCol(
                 BuildField(new FieldSpec { Path = "deepseek.temperature", Label = "温度", Kind = "num", Min = 0, Max = 2, IsInt = false, Hint = "越大越放得开（>1.2 容易跑偏）" }, true),
                 BuildField(new FieldSpec { Path = "deepseek.maxTokens", Label = "最多 token", Kind = "num", Min = 16, Max = 32768, Hint = "默认 700" }, true)));
-            chatPanel.Children.Add(TwoCol(
+            advancedBody.Children.Add(TwoCol(
                 BuildField(new FieldSpec { Path = "deepseek.frequencyPenalty", Label = "频率惩罚", Kind = "num", Min = -2, Max = 2, IsInt = false }, true),
                 BuildField(new FieldSpec { Path = "deepseek.presencePenalty", Label = "在场惩罚", Kind = "num", Min = -2, Max = 2, IsInt = false }, true)));
-            chatPanel.Children.Add(TwoCol(
+            advancedBody.Children.Add(TwoCol(
                 BuildField(new FieldSpec { Path = "deepseek.timeoutMs", Label = "请求超时(ms)", Kind = "num", Min = 1000, Max = 600000 }, true),
                 null));
             // 深度思考：和 /api/settings 共用 data/settings.json 的 thinking，走 /api/settings 保存。
@@ -1794,14 +2665,14 @@ namespace WhaleLauncher.Views
                 if (_loading) return;
                 await AutoSaveChatAsync();
             };
-            chatPanel.Children.Add(Row(
+            advancedBody.Children.Add(Row(
                 "深度思考", thinking,
-                "打开后会先想再答：更慢、更贵（思考 token 计入输出预算）",
+                "更慢、更贵；思考 token 计入输出预算。",
                 false, ModelLabel));
 
             var chatButtons = new WrapPanel { Margin = new Thickness(0, 6, 0, 0) };
-            var save = new Button { Content = "保存", Style = (Style)FindResource("Primary") };
-            var test = new Button { Content = "测试连通", Style = (Style)FindResource("Ghost"), Margin = new Thickness(8, 0, 0, 0) };
+            var save = new Button { Content = "保存", Style = (Style)FindResource("Ghost") };
+            var test = new Button { Content = "测试连通", Style = (Style)FindResource("Primary") };
             var resetSampling = new Button { Content = "采样恢复默认", Style = (Style)FindResource("Ghost"), Margin = new Thickness(8, 0, 0, 0) };
             resetSampling.Click += async (s, e) => await ResetFieldsAsync("采样参数", new[]
             {
@@ -1809,11 +2680,21 @@ namespace WhaleLauncher.Views
                 "deepseek.frequencyPenalty", "deepseek.presencePenalty",
                 "deepseek.timeoutMs",
             });
-            chatButtons.Children.Add(save);
             chatButtons.Children.Add(test);
-            chatButtons.Children.Add(resetSampling);
             chatPanel.Children.Add(chatButtons);
             chatPanel.Children.Add(chatResult);
+
+            var advancedButtons = new WrapPanel { Margin = new Thickness(0, 12, 0, 0) };
+            advancedButtons.Children.Add(save);
+            advancedButtons.Children.Add(resetSampling);
+            advancedBody.Children.Add(advancedButtons);
+
+            var advancedDivider = new Border { Height = 1, Background = (Brush)FindResource("Line"), Margin = new Thickness(0, 12, 0, 12) };
+            advancedBody.Children.Add(advancedDivider);
+            advancedBody.Children.Add(strip);
+            advancedBody.Children.Add(visionPanel);
+            advancedBody.Children.Add(voicePanel);
+            advancedBody.Children.Add(searchPanel);
 
             // 看图取值：自动 = 服务商传空（服务端跟随聊天模型）；手动 = 服务商 + 模型。
             string VisionProviderValue() => (visionProvider.SelectedItem as ProviderItem)?.Key ?? "";
@@ -2502,7 +3383,13 @@ namespace WhaleLauncher.Views
             KernelHint.Text = _sup.NodeRunning
                 ? "改完立即写回 config.json（密钥留空表示不改）"
                 : "可保存到本地，启动后生效。";
+            if (SubPageView.Visibility == Visibility.Visible && SubPageContent.Content is IRefreshable sub)
+            {
+                await sub.RefreshAsync();
+                return;
+            }
             if (!_configLoaded) await LoadConfigAsync();      // 还没回填过，补一次
+            else _previewLoaded.TrySetResult(true);
         }
 
         /// <summary>全量回填：把服务端的值刷回所有表单控件（跳过正在编辑的）。</summary>
@@ -2517,22 +3404,28 @@ namespace WhaleLauncher.Views
             try
             {
                 var cfg = await _sup.ReadConfigurationAsync("/api/config");
-                if (!_pageLifetime.IsCurrent(generation)) return;
+                // 首次挂载时 OnNavChanged 和 Loaded 可能各触发一次刷新，旧 generation 会被判失效；
+                // 这一轮已经拿到数据就继续填表，避免用户首次打开设置要空白等 5 秒。
+                if (!_pageLifetime.IsCurrent(generation) && _configLoaded) return;
                 if (!cfg.Ok) { KernelHint.Text = cfg.Error; return; }
                 var settings = await _sup.ReadConfigurationAsync("/api/settings");
-                if (!_pageLifetime.IsCurrent(generation) || revision != _configurationRevision)
+                if ((!_pageLifetime.IsCurrent(generation) && _configLoaded)
+                    || (_configLoaded && revision != _configurationRevision))
                 {
                     _lastLoad = DateTime.MinValue;
                     return;
                 }
                 var config = cfg.Prop("config");
+                _configRoot = config.ValueKind == JsonValueKind.Object ? config.Clone() : default;
+                _configOverrides.Clear();
                 var secrets = cfg.Prop("secrets");
                 var secretMasks = cfg.Prop("secretMasks");
                 foreach (var loader in _secretMaskLoaders)
                     loader.Value(JsonRead.Str(secretMasks, loader.Key));
-                _adminSpellStatus.Text = secrets.ValueKind == JsonValueKind.Object &&
-                    secrets.TryGetProperty("admin.spell", out var spell) && spell.ValueKind == JsonValueKind.True
-                    ? "已设置" : "未设置";
+                if (_adminSpellStatus != null)
+                    _adminSpellStatus.Text = secrets.ValueKind == JsonValueKind.Object &&
+                        secrets.TryGetProperty("admin.spell", out var spell) && spell.ValueKind == JsonValueKind.True
+                        ? "已设置" : "未设置";
                 _loading = true;
                 try
                 {
@@ -2552,6 +3445,10 @@ namespace WhaleLauncher.Views
                 }
                 _configLoaded = true;
                 _loadedOnline = _sup.NodeRunning;
+                _previewLoaded.TrySetResult(true);
+                RefreshSectionSummaries();
+                RefreshFieldState();
+                RefreshSearchIfActive();
             }
             finally
             {

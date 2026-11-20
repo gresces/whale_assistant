@@ -84,7 +84,7 @@ function extractSelfFacts(text, { msgId = '', now = Date.now() } = {}) {
 }
 
 /** 把规则抽到的事实写进卡（校验 chatId） */
-function applyFacts(card, facts, { chatId, now = Date.now() } = {}) {
+function applyFacts(card, facts, { chatId, now = Date.now(), about = 'other', scopes = [] } = {}) {
   const written = [];
   for (const fact of facts || []) {
     try {
@@ -96,6 +96,9 @@ function applyFacts(card, facts, { chatId, now = Date.now() } = {}) {
         source: fact.source,
         supersedes: fact.supersedes || [],
         explicit: true,
+        // L2 来源标记：只有主人自己的话才是 self；对象披露永远 other。
+        about: fact.about === 'self' ? 'self' : about,
+        scopes: Array.isArray(fact.scopes) ? fact.scopes : scopes,
       }, { chatId, now });
       if (!item) continue;
       if (fact.renameTo) card.nickname = clampText(fact.renameTo, 20);
@@ -112,7 +115,14 @@ function lightweightCandidates(messages, { now = Date.now() } = {}) {
   const out = [];
   for (const m of (messages || []).filter((x) => x && x.role === 'user' && x.text).slice(-LIMITS.factExtractEveryUserMessages)) {
     const { facts } = extractSelfFacts(m.text, { msgId: m.id || '', now });
-    for (const f of facts) out.push({ ...f, uid: m.uid || '', name: m.name || '', confidence: Math.min(f.confidence, 0.55) });
+    for (const f of facts) out.push({
+      ...f,
+      uid: m.uid || '',
+      name: m.name || '',
+      about: m.about === 'self' ? 'self' : 'other',
+      scopes: Array.isArray(m.scopes) ? m.scopes : [],
+      confidence: Math.min(f.confidence, 0.55),
+    });
   }
   return out;
 }
@@ -246,7 +256,13 @@ async function extractEpisode({ messages, llm, speakers = [], logger = null, now
     const facts = [];
     for (const m of users) {
       const { facts: got } = extractSelfFacts(m.text, { msgId: m.id || '', now });
-      for (const f of got) facts.push({ uid: m.uid || '', text: f.text, confidence: Math.min(0.7, f.confidence) });
+      for (const f of got) facts.push({
+        uid: m.uid || '',
+        text: f.text,
+        about: m.about === 'self' ? 'self' : 'other',
+        scopes: Array.isArray(m.scopes) ? m.scopes : [],
+        confidence: Math.min(0.7, f.confidence),
+      });
     }
     return {
       summary: extractiveSummary(messages),

@@ -13,20 +13,19 @@ function fixture(t, cap = 1, start = NOW) {
   t.after(() => fs.rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 40 }));
   const clock = { now: start };
   const config = { paths: { dataDir: root }, env: { timezone: 'UTC' }, reminder: { enabled: true, maxPerDay: cap, quietAfterMinutes: 0 } };
-  const make = () => { const svc = new ReminderService(config, { now: () => clock.now }); svc.pluginAllowed = () => true; return svc; };
+  const make = () => new ReminderService(config, { now: () => clock.now });
   return { clock, config, make, svc: make() };
 }
 const kinds = items => items.map(item => item.kind || 'ordinary');
 function append(f, kind, at = f.clock.now + 1000) {
   if (kind === 'ordinary') return f.svc.add({ wxid: OWNER, text: 'synthetic reminder', at });
-  return f.svc.enqueueNow({ wxid: OWNER, text: 'synthetic notification', kind, pluginId: 'test-t09-plugin', pluginHash: 'test-hash' });
+  return f.svc.enqueueNow({ wxid: OWNER, text: 'synthetic notification', kind });
 }
 
 for (const [label, order, cap, expected] of [
   ['diary first', ['diary', 'ordinary'], 1, ['diary', 'ordinary']],
   ['ordinary first', ['ordinary', 'diary'], 1, ['ordinary', 'diary']],
   ['multiple diaries', ['diary', 'diary', 'ordinary'], 1, ['diary', 'diary', 'ordinary']],
-  ['authorized plugin first', ['plugin', 'ordinary'], 1, ['plugin', 'ordinary']],
   ['cap0 unlimited', ['diary', 'ordinary', 'ordinary'], 0, ['diary', 'ordinary', 'ordinary']],
   ['ordinary hard cap1', ['ordinary', 'ordinary'], 1, ['ordinary']],
 ]) {
@@ -113,15 +112,6 @@ test('T09 quota: old-day retry cannot bypass an already filled new-day cap', t =
   assert.equal(f.svc.rules().sentToday, 1);
 });
 
-test('T09 quota: unconfirmed plugin outcome is never automatically retried', t => {
-  const f = fixture(t), item = append(f, 'plugin');
-  assert.equal(f.svc.due().length, 1);
-  assert.equal(f.svc.ack(item.id, { ok: false }).item.status, 'unconfirmed');
-  f.clock.now += RETRY_DELAY_MS;
-  assert.equal(f.svc.due().length, 0);
-  assert.equal(f.svc.rules().sentToday, 0);
-});
-
 test('T09 quota: unknown/custom kind is ordinary rather than a new exemption', t => {
   for (const kind of ['custom', 'unknown', 'DIARY', 'PLUGIN']) {
     const f = fixture(t);
@@ -132,19 +122,11 @@ test('T09 quota: unknown/custom kind is ordinary rather than a new exemption', t
   }
 });
 
-test('T09 quota: diary and authorized plugin keep their existing disabled-reminder exemption', t => {
+test('T09 quota: diary keeps its existing disabled-reminder exemption', t => {
   const f = fixture(t); f.config.reminder.enabled = false;
-  append(f, 'diary'); append(f, 'plugin');
-  assert.deepEqual(kinds(f.svc.due()), ['diary', 'plugin']);
+  append(f, 'diary');
+  assert.deepEqual(kinds(f.svc.due()), ['diary']);
   assert.equal(f.svc.rules().sentToday, 0);
-});
-
-test('T09 quota: revoked plugin cannot claim a task or consume an ordinary reservation', t => {
-  const f = fixture(t); append(f, 'plugin'); append(f, 'ordinary');
-  f.svc.pluginAllowed = () => false; f.clock.now += 1000;
-  assert.deepEqual(kinds(f.svc.due()), ['ordinary']);
-  assert.equal(f.svc.items[0].status, 'cancelled');
-  assert.equal(f.svc.rules().sentToday, 1);
 });
 
 test('T09 quota: final ordinary retry failure stays terminal without another claim', t => {
@@ -187,7 +169,7 @@ test('T09 round2: delayed uncertain ACK retains claimed-day quota rather than mo
   assert.equal(reloaded.rules().sentToday, 0);
 });
 
-for (const kind of ['plugin', 'diary']) {
+for (const kind of ['diary']) {
   test(`T09 round2: uncertain ${kind} remains exempt from ordinary reminder quota`, t => {
     const f = fixture(t), item = append(f, kind); assert.equal(f.svc.due().length, 1);
     assert.equal(f.svc.ack(item.id, { ok: true, uncertain: true }).item.status, 'unconfirmed');

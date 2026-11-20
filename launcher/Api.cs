@@ -120,6 +120,18 @@ namespace WhaleLauncher
             }
         }
 
+        public static async Task<ApiResult> Delete(string baseUrl, string path, int timeoutSeconds = 10)
+        {
+            try
+            {
+                return await SendAsync(ct => Http.DeleteAsync(baseUrl + path, ct), timeoutSeconds);
+            }
+            catch (Exception ex)
+            {
+                return new ApiResult { Ok = false, Error = FriendlyError(ex) };
+            }
+        }
+
         /// <summary>对象直接序列化，别再手拼 JSON；字符串转义、数字格式、嵌套层级都由序列化器负责。</summary>
         public static Task<ApiResult> PostJson(string baseUrl, string path, object body, int timeoutSeconds = 10)
             => Post(baseUrl, path, JsonSerializer.Serialize(body, JsonOptions), timeoutSeconds);

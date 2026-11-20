@@ -671,7 +671,7 @@ class ReminderAckComponentTests(SafeFixture):
         http = SimpleNamespace(get=Mock(return_value=Response({'ok': True, 'items': [item]})), post=Mock(side_effect=post))
         with patch.object(reminder_watch.threading, 'Thread'):
             runner = reminder_watch.start_reminder_watch(http=http, base='http://fixture.invalid', token='fixture-token',
-                send_text=send_text, send_at=send_at, send_voice=voice, log=Mock())
+                send_text=send_text, send_at=send_at, log=Mock())
         attempts._LOCAL.last_result = attempts.SendResult('confirmed', 'stale unrelated global', True)
         return runner, calls, runtime, uia, effect, voice
 
@@ -721,20 +721,6 @@ class ReminderAckComponentTests(SafeFixture):
         runtime.gui.at_member.assert_called_once()
         self.bg.send.assert_not_called()
         self.assertTrue(calls[0]['uncertain'])
-
-    def test_plugin_permission_refusal_and_legacy_voice_cancel_seam_are_preserved(self):
-        runner, calls, _runtime, _uia, _effect, voice = self.adapter(
-            item_changes={'kind': 'plugin', 'delivery': 'voice'}, permission=False)
-        self.assertEqual(runner.step()[0], 0)
-        voice.assert_not_called()
-        self.assertFalse(calls[0]['ok'])
-        self.assertNotIn('uncertain', calls[0])
-        runner, calls, _runtime, _uia, _effect, voice = self.adapter(
-            item_changes={'kind': 'plugin', 'delivery': 'voice'}, permission=True)
-        self.assertEqual(runner.step()[0], 1)
-        voice.assert_called_once()
-        self.assertFalse(voice.call_args.kwargs['cancelled']())
-        self.assertEqual(calls, [{'id': 'fixture-reminder', 'ok': True, 'error': ''}])
 
 
 class FinalSenderLogTests(SafeFixture):

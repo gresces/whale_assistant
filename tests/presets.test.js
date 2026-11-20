@@ -83,7 +83,8 @@ test('id 里带路径穿越取不到东西', () => {
 
 test('仓库自带的人设预设都是通用版：不含微信号、群昵称、Key', () => {
   const root = path.resolve(__dirname, '..');
-  const list = presets.list({ paths: { root } });
+  // 只查仓库自带的预设：data/personas 下是用户自己的预设，合法地可能带自己的联系方式。
+  const list = presets.list({ paths: { root } }).filter((item) => item.source === 'builtin');
   assert.ok(list.length >= 1, '至少要有一个人设预设');
   for (const item of list) {
     const preset = presets.load({ paths: { root } }, item.id);
@@ -92,24 +93,6 @@ test('仓库自带的人设预设都是通用版：不含微信号、群昵称�
     assert.doesNotMatch(text, /1[3-9]\d{9}|[\w.+-]+@[\w-]+\.[a-z]{2,}/i, item.id + ' 里疑似有手机号/邮箱');
     assert.ok(String(preset.customPrompt || '').length > 100, item.id + ' 应该有完整提示词');
   }
-});
-
-test('启用的人设插件加入预设，禁用后消失且不影响内置预设', (t) => {
-  const root = makeRoot();
-  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
-  writePreset(root, 'standard.json', { id: 'standard', name: '内置', customPrompt: '内置正文' });
-  const plugins = path.join(root, 'data', 'plugins');
-  fs.mkdirSync(plugins, { recursive: true });
-  const config = { paths: { root } };
-  const marker = path.join(plugins, 'gentle-chat.persona.json');
-  assert.deepEqual(presets.list(config).map(x => x.id), ['standard']);
-  fs.writeFileSync(marker, JSON.stringify({
-    id: 'standard', name: '温和聊天', version: '1.0.0', customPrompt: '温和自然', personaName: '小鱼'
-  }));
-  assert.deepEqual(presets.list(config).map(x => x.id), ['standard', 'market-gentle-chat']);
-  assert.deepEqual(presets.toPatch(presets.load(config, 'market-gentle-chat')), { name: '小鱼', customPrompt: '温和自然' });
-  fs.unlinkSync(marker);
-  assert.equal(presets.load(config, 'market-gentle-chat'), null);
 });
 
 function userConfig(root, persona = {}, chat = {}) {
@@ -172,25 +155,15 @@ test('自建预设物理删除；正在使用的不许删', () => {
   fs.rmSync(root, { recursive: true, force: true, maxRetries: 6, retryDelay: 60 });
 });
 
-test('内置预设只隐藏不删文件，市场预设重装后自动恢复', () => {
+test('内置预设只隐藏不删文件', () => {
   const root = makeRoot();
   writePreset(root, 'persona-standard.json', { id: 'persona-standard', name: '标准', customPrompt: '正文' });
-  const pluginFile = path.join(root, 'data', 'plugins', 'gentle.persona.json');
-  fs.mkdirSync(path.dirname(pluginFile), { recursive: true });
-  fs.writeFileSync(pluginFile, JSON.stringify({ id: 'gentle', name: '温和', customPrompt: '市场正文' }));
   const config = userConfig(root);
-  assert.deepEqual(presets.list(config).map((x) => x.id), ['persona-standard', 'market-gentle']);
+  assert.deepEqual(presets.list(config).map((x) => x.id), ['persona-standard']);
 
   assert.equal(presets.removePreset(config, 'persona-standard').ok, true);
   assert.ok(fs.existsSync(path.join(root, 'assets', 'personas', 'persona-standard.json')), '内置文件不能删');
-  assert.deepEqual(presets.list(config).map((x) => x.id), ['market-gentle']);
-
-  assert.equal(presets.removePreset(config, 'market-gentle').ok, true);
   assert.deepEqual(presets.list(config).map((x) => x.id), []);
-
-  // 插件卸载后重装：文件重建、内容也变了 → 隐藏标记自动失效
-  fs.writeFileSync(pluginFile, JSON.stringify({ id: 'gentle', name: '温和', customPrompt: '重装后的新正文' }));
-  assert.deepEqual(presets.list(config).map((x) => x.id), ['market-gentle']);
   fs.rmSync(root, { recursive: true, force: true, maxRetries: 6, retryDelay: 60 });
 });
 
@@ -204,7 +177,7 @@ test('预设 id / 标题不合法时拒绝保存，不允许用标题当路径',
   fs.rmSync(root, { recursive: true, force: true, maxRetries: 6, retryDelay: 60 });
 });
 
-test('自建预设可以只改标题；来源判断区分内置/市场/自建', () => {
+test('自建预设可以只改标题；来源判断区分内置/自建', () => {
   const root = makeRoot();
   writePreset(root, 'persona-standard.json', { id: 'persona-standard', name: '标准', customPrompt: '正文' });
   const config = userConfig(root);

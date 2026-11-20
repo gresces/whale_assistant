@@ -3,9 +3,9 @@
 /**
  * 消息汇总（全局日报）回归。
  *
- * 起因：4.1 只有「插件市场」，插件运行时拿不到聊天记录、输出也只有整数，
- * 做不了「把今天的会话汇总成一段简报」。这个功能由内核自己做：
- * 读记忆库 → 拼提示词 → 聊天模型写 Markdown → 插件设置页展示。
+ * 起因：早期版本只有扩展能拿聊天记录，做不了「把今天的会话汇总成一段简报」。
+ * 这个功能后来由内核自己做：读记忆库 → 拼提示词 → 聊天模型写 Markdown。
+ * 扩展页移除后启动器不再挂入口，汇总只保留内核 API。
  *
  * 这里盯住四件事：
  *   1) 时间窗只取当天（昨天的不许混进来）；
@@ -257,10 +257,9 @@ test('路由：GET 读状态，POST 立刻 202 并把范围交给后台生成', 
 const repoRoot = path.resolve(__dirname, '..');
 const read = (rel) => fs.readFileSync(path.join(repoRoot, rel), 'utf8');
 
-test('消息汇总通过插件设置进入，工作台不重复挂入口', () => {
+test('消息汇总不再通过扩展页进入，启动器也不再挂独立入口', () => {
   const main = read('launcher/MainWindow.xaml.cs');
-  const tool = read('launcher/Views/PluginToolPage.xaml.cs');
   assert.doesNotMatch(main, /Key = "消息汇总"|new DigestPage\(/);
-  assert.match(tool, /PluginHostActions.SummarizeAsync\(_sup, value\)/);
-  assert.match(tool, /if \(digest && !AppDialog\.Confirm\([\s\S]*?"确认聊天汇总权限", okText: "允许一次"\)\)\s*return;/);
+  // 扩展宿主页已随扩展入口一起移除，汇总只保留内核 API。
+  assert.ok(!fs.existsSync(path.join(repoRoot, 'launcher/Views/PluginToolPage.xaml.cs')));
 });

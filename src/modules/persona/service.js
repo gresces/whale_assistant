@@ -6,10 +6,12 @@ const presets = require('../../persona/presets');
 const { checkPersonaTokens } = require('../../persona/tokenCheck');
 const { LIMITS } = require('../../memory/constants');
 const { describeError } = require('../../infra/errors');
-const { identityPatch, usesNewPersona } = require('../../persona/profile');
+const { identityPatch, usesNewPersona, IDENTITY_FIELDS } = require('../../persona/profile');
 const { portableFields } = require('../../persona/portable');
 const { legacyPatch } = require('../../persona/legacy');
 const { checkCustomPrompt } = require('../../persona/conflict');
+const blockPreview = require('../../persona/blocks');
+const customBlockLib = require('../../persona/customBlocks');
 
 /* ---------------- 人设调教（/api/persona 用） ---------------- */
 
@@ -48,6 +50,8 @@ async function applyPersonaPatch(runtime, body) {
   for (const key of ['ownerName', 'aliases', 'masterRoast', 'proactive', 'opinions', 'emojiChance', 'maxBubbles', 'discussionMaxChars']) {
     if (Object.hasOwn(portable, key)) patch[key] = portable[key];
   }
+  // 提示词画布的段落也允许整包应用 / 导入时一起带进来；显式空数组表示清空。
+  if (Object.hasOwn(portable, 'customBlocks')) patch.customBlocks = portable.customBlocks;
   const str = (v, max) => String(v == null ? '' : v).trim().slice(0, max);
   if (body.emoji !== undefined) patch.emoji = ['关', '少', '正常', '多'].includes(body.emoji) ? body.emoji : '正常';
   if (body.historyTurns !== undefined) patch.historyTurns = Math.max(4, Math.min(400, Number(body.historyTurns) || 200));
@@ -160,4 +164,96 @@ function renamePersonaPreset(runtime, body = {}) {
   return { ok: true, preset: result.preset, presets: presets.list(runtime.config) };
 }
 
-module.exports = { applyPersonaPatch, savePersonaPreset, deletePersonaPreset, renamePersonaPreset, currentPersonaWarnings };
+/** 当前配置下的只读预览（GET /api/persona/prompt 与保存后的回包共用）。 */
+function promptPreview(runtime, options = {}) {
+  const chatType = options.chatType === 'group' ? 'group' : 'private';
+  const raw = options.isMaster;
+  const isMaster = raw === undefined || raw === null
+    ? true
+    : raw === true || raw === 1 || raw === '1' || raw === 'true';
+  return {
+    ok: true,
+    ...blockPreview.buildPreview(runtime.config, { chatType, isMaster }),
+    warnings: currentPersonaWarnings(runtime.config),
+  };
+}
+
+/** 预览只读：不落盘、不改内存配置。 */
+function personaPrompt(runtime, query = {}) {
+  return promptPreview(runtime, {
+    chatType: query.chatType,
+    isMaster: query.isMaster === null || query.isMaster === undefined ? true : query.isMaster,
+  });
+}
+
+function editableBlockMax(id) {
+  if (id === 'personality' || id === 'background') return IDENTITY_FIELDS[id].max;
+  if (id === 'custom') return customBlockLib.CUSTOM_PROMPT_MAX;
+  return customBlockLib.TEXT_MAX;
+}
+
+/** POST /api/persona/block：只改 text 段；保存后直接回新预览，UI 不用再请求一次。 */
+function savePersonaBlock(runtime, body = {}) {
+  const id = String(body.id || '').trim();
+  const text = customBlockLib.cleanText(body.text);
+  const isFixed = id === 'personality' || id === 'background' || id === 'custom';
+  if (!isFixed && !customBlockLib.validId(id)) {
+    return { ok: false, error: '这个段落不是可编辑文本：' + (id || '（空）') };
+  }
+  const max = editableBlockMax(id);
+  if (text.length > max) {
+    return { ok: false, error: `「${id}」最多 ${max} 字，当前 ${text.length} 字` };
+  }
+  const secret = customBlockLib.secretReason(text);
+  if (secret) return { ok: false, error: secret };
+
+  const patch = {};
+  if (id === 'personality' || id === 'background') {
+    patch[id] = text;
+  } else if (id === 'custom') {
+    patch.customPrompt = text;
+  } else {
+    const list = customBlockLib.normalizeBlocks(runtime.config.persona.customBlocks);
+    const index = list.findIndex((item) => item.id === id);
+    if (index < 0) return { ok: false, error: '这个自定义段落不存在' };
+    list[index] = { ...list[index], text };
+    patch.customBlocks = list;
+  }
+  personaStore.save(runtime.config, patch);
+  runtime.logger.info(`人设画布：已保存段落 ${id}（${text.length} 字）`);
+  return promptPreview(runtime, body);
+}
+
+/** POST /api/persona/blocks：新增自定义段落（最多 10 段）。 */
+function createPersonaBlock(runtime, body = {}) {
+  const list = customBlockLib.normalizeBlocks(runtime.config.persona.customBlocks);
+  if (list.length >= customBlockLib.MAX_BLOCKS) {
+    return { ok: false, error: `自定义段落最多 ${customBlockLib.MAX_BLOCKS} 段，先删掉一段再添加` };
+  }
+  const checked = customBlockLib.validateNewBlock(body);
+  if (checked.error) return { ok: false, error: checked.error };
+  const secret = customBlockLib.secretReason(checked.title, checked.text);
+  if (secret) return { ok: false, error: secret };
+  const id = customBlockLib.newId(list);
+  list.push({ id, title: checked.title, text: checked.text });
+  personaStore.save(runtime.config, { customBlocks: list });
+  runtime.logger.info(`人设画布：已新增段落 ${id}（${checked.text.length} 字）`);
+  return { ...promptPreview(runtime, body), id };
+}
+
+/** DELETE /api/persona/blocks/:id：删除自定义段落，返回新预览。 */
+function deletePersonaBlock(runtime, id, options = {}) {
+  const key = String(id || '').trim();
+  if (!customBlockLib.validId(key)) return { ok: false, error: '这个自定义段落不存在' };
+  const list = customBlockLib.normalizeBlocks(runtime.config.persona.customBlocks);
+  const next = list.filter((item) => item.id !== key);
+  if (next.length === list.length) return { ok: false, error: '这个自定义段落不存在' };
+  personaStore.save(runtime.config, { customBlocks: next });
+  runtime.logger.info(`人设画布：已删除段落 ${key}`);
+  return { ...promptPreview(runtime, options), id: key };
+}
+
+module.exports = {
+  applyPersonaPatch, savePersonaPreset, deletePersonaPreset, renamePersonaPreset, currentPersonaWarnings,
+  personaPrompt, savePersonaBlock, createPersonaBlock, deletePersonaBlock,
+};

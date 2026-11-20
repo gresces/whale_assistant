@@ -93,7 +93,8 @@ test('图片识别不会把整个会话卡死：密钥扫描和识别都有时�
   assert.match(bridge, /def install_key_scan_guard/, '要有图片密钥扫描护栏');
   assert.match(bridge, /monitor=False, monitor_timeout=monitor_timeout/, '必须强制单次扫描，不再等 120 秒 monitor');
   assert.match(bridge, /_scan_aes_key = scan/, '护栏要真的替换实例方法');
-  assert.match(bridge, /install_key_scan_guard\(dl, log=log\)/, '创建媒体下载器时要装上护栏');
+  assert.match(bridge, /install_key_scan_guard\(dl, log=log/, '创建媒体下载器时要装上护栏');
+  assert.match(bridge, /install_key_cache\(dl, root=ROOT/, '密钥成功取到时要落盘复用');
   assert.match(bridge, /def run_media_with_timeout/, '识别要有超时包一层');
   const fn = bridge.slice(bridge.indexOf('def on_message_inner'));
   const body = fn.slice(0, fn.indexOf('\n    def ', 10));

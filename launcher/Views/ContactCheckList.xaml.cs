@@ -1,55 +1,81 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text.Json;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
-using System.Windows.Media;
 
 namespace WhaleLauncher.Views
 {
-    /// <summary>名单列表里的一行。</summary>
+    /// <summary>联系人候选项；人设页的主要联系人搜索也复用它。</summary>
     public sealed class ContactItem : ContactInfo
     {
-        private bool _isSelected;
-
-        public bool IsSelected
-        {
-            get => _isSelected;
-            set => Set(ref _isSelected, value);
-        }
-
         public string Sub => Wxid + (IsGroup ? " · 群聊" : " · 私聊");
         public Visibility GroupBadgeVisibility => IsGroup ? Visibility.Visible : Visibility.Collapsed;
     }
 
+    /// <summary>已选名单里的一行。</summary>
+    public sealed class PolicyContactRow : ContactInfo
+    {
+        public string Kind => IsGroup ? "群聊" : "私聊";
+        public string RemoveName => "移除 " + Display;
+    }
+
+    /// <summary>添加会话时的一个候选项；IsPicked 只属于这一次添加。</summary>
+    public sealed class PickRow : ContactInfo
+    {
+        private bool _isPicked;
+
+        public bool IsPicked
+        {
+            get => _isPicked;
+            set => Set(ref _isPicked, value);
+        }
+
+        public string Kind => IsGroup ? "群聊" : "私聊";
+    }
+
     /// <summary>
-    /// 白名单 / 静音黑名单的内联选择器：搜索 + 勾选，勾一下立即写回 config。
+    /// 一份发言名单的「已选 + 添加」控件。
     ///
-    /// 以前是「chips + 编辑按钮 + 二级弹窗」，用户每选一个会话都要开关一次弹窗，
-    /// 白名单和黑名单还得各开一遍。现在名单直接铺在发言范围窗口里：
-    /// 搜索框实时过滤本地联系人，勾选后马上 PATCH，不再有「确定 / 取消」两道关。
-    /// 勾选即保存是有意的：用户点复选框就是最终表达，回窗口再点保存反而容易漏。
+    /// 名单是结果集，不是联系人全集：这里只列已经选中的会话，添加时再从联系人目录里多选。
+    /// 勾选/移除/添加都直接 PATCH config，没有「确定 / 保存」第二道关；失败就回滚到上次成功的名单。
+    /// 搜索框只在名单超过 8 个时出现，平时不占一行表单。
     /// </summary>
     public partial class ContactCheckList : UserControl
     {
+        private const int SearchThreshold = 8;
+
         private readonly RuntimeSupervisor _sup;
         private readonly string _configPath;
         private readonly bool _allowAllMute;
         private readonly ConfigSaver _saver;
 
-        private readonly List<ContactItem> _all = new List<ContactItem>();
         private readonly List<string> _chosen = new List<string>();
+        private readonly Dictionary<string, ContactInfo> _known = new Dictionary<string, ContactInfo>();
+        private readonly HashSet<string> _pending = new HashSet<string>();
+        private List<ContactInfo> _contacts = new List<ContactInfo>();
         private List<string> _savedIds = new List<string>();
-        private bool _savedAllMute;
 
+        private bool _savedAllMute;
         private bool _ready;
         private bool _loading;
         private bool _applying;
+        private bool _preview;
+        private bool _contactsFailed;
+        private bool _onlyMode;
+        private bool _rendering;
 
-        /// <summary>把一行结果文字抛给宿主页面（宿主自己决定显示在哪）。</summary>
+        /// <summary>保存结果或失败原因，交给宿主决定显示在顶部还是行内。</summary>
         public event Action<string> Status;
+
+        /// <summary>名单数量 / 「全部」状态变了，宿主刷新状态摘要。</summary>
+        public event Action Changed;
+
+        public int SelectedCount => _chosen.Count;
+
+        public bool AllMuted => _allowAllMute && ChkAll.IsChecked == true;
 
         public ContactCheckList(RuntimeSupervisor sup, string configPath, bool allowAllMute)
         {
@@ -59,9 +85,10 @@ namespace WhaleLauncher.Views
             _allowAllMute = allowAllMute;
             _saver = new ConfigSaver(sup);
 
-            AllMuteCheck.Visibility = allowAllMute ? Visibility.Visible : Visibility.Collapsed;
+            // 只有黑名单认 *（全部会话）；白名单里的 * 是旧配置残留。
+            ChkAll.Visibility = allowAllMute ? Visibility.Visible : Visibility.Collapsed;
             Loaded += (_, __) => _ready = true;
-            RenderFooter();
+            Render();
         }
 
         /// <summary>从 config 回填（不会触发保存）。</summary>
@@ -78,7 +105,6 @@ namespace WhaleLauncher.Views
                     if (id.Length == 0) continue;
                     if (id == "*")
                     {
-                        // 只有黑名单认「全部静音」；白名单里的 * 是老配置残留，不往 care.whitelist 写回去。
                         if (_allowAllMute) allMute = true;
                         continue;
                     }
@@ -89,157 +115,274 @@ namespace WhaleLauncher.Views
             _savedAllMute = allMute;
 
             _applying = true;
-            try { AllMuteCheck.IsChecked = allMute; }
+            try { ChkAll.IsChecked = allMute; }
             finally { _applying = false; }
-            ApplyAllMuteState();
-            UpdateList();
+            Render();
         }
 
-        /// <summary>拉联系人列表；失败时保留已勾选条目，只显示原因。</summary>
+        /// <summary>截图预览用：直接给名字和分组，不读接口、不写配置。</summary>
+        public void PreviewSeed(IEnumerable<ContactInfo> items, bool allMute)
+        {
+            _preview = true;
+            _chosen.Clear();
+            _known.Clear();
+            foreach (var info in items)
+            {
+                if (info == null || string.IsNullOrEmpty(info.Wxid)) continue;
+                if (!_chosen.Contains(info.Wxid)) _chosen.Add(info.Wxid);
+                _known[info.Wxid] = info;
+            }
+            _savedIds = new List<string>(_chosen);
+            _savedAllMute = allMute;
+            _applying = true;
+            try { ChkAll.IsChecked = allMute; }
+            finally { _applying = false; }
+            Render();
+        }
+
+        /// <summary>仅白名单模式开关会影响空白名单该怎么提示。</summary>
+        public void SetScopeHint(bool onlyMode)
+        {
+            if (_onlyMode == onlyMode) return;
+            _onlyMode = onlyMode;
+            Render();
+        }
+
+        /// <summary>拉联系人列表；失败时保留已选条目，只在添加面板里说明原因。</summary>
         public async Task ReloadAsync(bool force = false)
         {
+            if (_preview || _sup == null) return;
             if (_loading) return;
-            if (!_sup.NodeRunning)
-            {
-                ShowState("内核没起，连不上服务器。已勾选的条目不会丢，启动内核后再刷新。", true);
-                return;
-            }
-
             _loading = true;
-            BtnReload.IsEnabled = false;
             try
             {
+                if (!_sup.NodeRunning && !await _sup.KernelReachableAsync())
+                {
+                    _contactsFailed = true;
+                    return;
+                }
+
                 var snap = await _sup.Contacts.LoadAsync(force);
-                if (!snap.Ok) SetError("联系人接口还没就绪（GET /api/wechat/contacts 失败）。" + snap.Error);
-
-                _all.Clear();
-                foreach (var info in snap.Items)
+                _contactsFailed = !snap.Ok;
+                if (snap.Ok)
                 {
-                    _all.Add(new ContactItem
+                    _contacts = snap.Items;
+                    foreach (var id in _chosen)
                     {
-                        Wxid = info.Wxid,
-                        Name = info.Name,
-                        Remark = info.Remark,
-                        IsGroup = info.IsGroup,
-                        IsSelected = _chosen.Contains(info.Wxid)
-                    });
+                        var info = _contacts.FirstOrDefault(x => x.Wxid == id);
+                        if (info != null) _known[id] = info;
+                    }
+                    if (_contacts.Count == 0) _contactsFailed = false;
                 }
-
-                // 已选但不在联系人缓存里的 id 仍然要能看见、能取消，否则用户会以为选择丢了。
-                foreach (var id in _chosen)
-                {
-                    if (_all.Any(x => x.Wxid == id)) continue;
-                    _all.Add(new ContactItem
-                    {
-                        Wxid = id,
-                        Name = id == "filehelper" ? "文件传输助手" : "",
-                        IsGroup = false,
-                        IsSelected = true
-                    });
-                }
-
-                if (_all.Count == 0)
-                {
-                    ShowState(!snap.Ok
-                        ? "联系人列表加载失败，已勾选的条目仍然保留。"
-                        : (snap.UpdatedAt == 0
-                            ? "联系人缓存还没同步（updatedAt = 0）：联系人只在核心启动时扫描一次，重启核心后再刷新。"
-                            : "联系人列表是空的。"), !snap.Ok);
-                }
-                else
-                {
-                    UpdateList();
-                }
-                RenderFooter();
             }
             finally
             {
                 _loading = false;
-                BtnReload.IsEnabled = !AllMuted;
+                Render();
             }
         }
 
-        private async void OnReload(object sender, RoutedEventArgs e) => await ReloadAsync(force: true);
+        private async void OnTogglePicker(object sender, RoutedEventArgs e)
+        {
+            if (!_ready || AllMuted) return;
+            BtnAdd.IsEnabled = false;
+            if (_contacts.Count == 0 || _contactsFailed)
+            {
+                BtnAdd.Content = "读取中…";
+                await ReloadAsync(force: true);
+                BtnAdd.Content = "添加会话";
+            }
+
+            _pending.Clear();
+            PickerSearch.Text = "";
+            PickerPanel.Visibility = Visibility.Visible;
+            SearchBox.IsEnabled = false;
+            RenderPicker();
+            BtnAdd.IsEnabled = false;
+            PickerSearch.Focus();
+        }
+
+        private void OnClosePicker(object sender, RoutedEventArgs e)
+        {
+            _pending.Clear();
+            PickerPanel.Visibility = Visibility.Collapsed;
+            Render();
+            BtnAdd.Focus();
+        }
+
+        private void OnPickerSearchChanged(object sender, TextChangedEventArgs e)
+        {
+            if (!IsLoaded || PickerPanel.Visibility != Visibility.Visible) return;
+            RenderPicker();
+        }
+
+        private void OnPickToggled(object sender, RoutedEventArgs e)
+        {
+            if (!(sender is CheckBox cb) || !(cb.DataContext is PickRow row)) return;
+            if (cb.IsChecked == true) _pending.Add(row.Wxid);
+            else _pending.Remove(row.Wxid);
+            BtnAddPicked.IsEnabled = _pending.Count > 0;
+        }
+
+        private async void OnAddPicked(object sender, RoutedEventArgs e)
+        {
+            if (_pending.Count == 0) return;
+            foreach (var id in _pending)
+            {
+                if (_chosen.Contains(id)) continue;
+                _chosen.Add(id);
+                var info = _contacts.FirstOrDefault(x => x.Wxid == id);
+                if (info != null) _known[id] = info;
+            }
+            _pending.Clear();
+            PickerPanel.Visibility = Visibility.Collapsed;
+            Render();
+            await SaveAsync();
+            BtnAdd.Focus();
+        }
 
         private void OnSearchChanged(object sender, TextChangedEventArgs e)
         {
-            if (!IsLoaded) return;
-            UpdateList();
+            if (!IsLoaded || _rendering) return;
+            RenderRows(AllMuted);
         }
 
-        private async void OnItemToggled(object sender, RoutedEventArgs e)
+        private async void OnRemove(object sender, RoutedEventArgs e)
         {
-            if (!_ready || !(sender is CheckBox cb) || !(cb.DataContext is ContactItem item)) return;
-            item.IsSelected = cb.IsChecked == true;
-            if (item.IsSelected)
-            {
-                if (!_chosen.Contains(item.Wxid)) _chosen.Add(item.Wxid);
-            }
-            else
-            {
-                _chosen.Remove(item.Wxid);
-            }
-            RenderFooter();
+            if (!_ready || AllMuted) return;
+            if (!(sender is FrameworkElement element) || !(element.DataContext is PolicyContactRow row)) return;
+            _chosen.Remove(row.Wxid);
+            Render();
             await SaveAsync();
         }
 
         private async void OnAllMuteChanged(object sender, RoutedEventArgs e)
         {
             if (!_ready || _applying) return;
-            ApplyAllMuteState();
+            Render();
             await SaveAsync();
         }
 
-        private bool AllMuted => _allowAllMute && AllMuteCheck.IsChecked == true;
-
-        private void ApplyAllMuteState()
+        /// <summary>搜索框、添加按钮、列表一起跟随「全部会话」和名单数量。</summary>
+        private void Render()
         {
-            var all = AllMuted;
-            List.IsEnabled = !all;
-            SearchBox.IsEnabled = !all;
-            BtnReload.IsEnabled = !all && !_loading;
-            AllMuteHint.Visibility = all ? Visibility.Visible : Visibility.Collapsed;
-            AllMuteHint.Text = all ? "全部静音期间暂停向所有会话发言，取消后恢复按名单静音。" : "";
-            RenderFooter();
+            if (_rendering) return;
+            _rendering = true;
+            try
+            {
+                var all = AllMuted;
+                if (all && PickerPanel.Visibility == Visibility.Visible)
+                {
+                    _pending.Clear();
+                    PickerPanel.Visibility = Visibility.Collapsed;
+                }
+                BtnAdd.IsEnabled = !all && PickerPanel.Visibility != Visibility.Visible;
+                SearchBox.IsEnabled = !all && PickerPanel.Visibility != Visibility.Visible;
+                SearchBox.Visibility = !all && _chosen.Count > SearchThreshold
+                    ? Visibility.Visible : Visibility.Collapsed;
+                FilterHost.Visibility = SearchBox.Visibility;
+                RenderRows(all);
+                Changed?.Invoke();
+            }
+            finally
+            {
+                _rendering = false;
+            }
         }
 
-        /// <summary>本地过滤，输入即出结果；联系人本身仍保留原始勾选状态。</summary>
-        private void UpdateList()
+        private void RenderRows(bool all)
         {
-            var q = (SearchBox.Text ?? "").Trim();
-            var filtered = q.Length == 0
-                ? _all
-                : _all.Where(x => ContactDirectory.Matches(x, q)).ToList();
-
-            // 已选的排前面，方便确认名单；其余保持联系人接口的原始顺序。
-            var ordered = filtered.OrderByDescending(x => x.IsSelected).ToList();
-            List.ItemsSource = ordered;
-
-            if (ordered.Count > 0)
+            if (all)
             {
+                ShowState("全部会话都已不处理（*）。取消上面的勾选，可恢复按名单处理。");
+                return;
+            }
+
+            var q = SearchBox.Visibility == Visibility.Visible ? (SearchBox.Text ?? "").Trim() : "";
+            var rows = _chosen
+                .Select(BuildRow)
+                .Where(x => q.Length == 0 || ContactDirectory.Matches(x, q))
+                .ToList();
+            List.ItemsSource = rows;
+
+            if (_chosen.Count == 0)
+            {
+                ShowState(IsBlacklist
+                    ? "没有黑名单会话。需要彻底忽略某个群时再加。"
+                    : (_onlyMode
+                        ? "白名单是空的。开启仅白名单后，所有会话都不会被处理。"
+                        : "白名单是空的。加入会话后，只对它们主动搭话。"));
+            }
+            else if (rows.Count == 0)
+            {
+                ShowState("没有匹配「" + q + "」的会话。");
+            }
+            else
+            {
+                List.Visibility = Visibility.Visible;
                 StateText.Visibility = Visibility.Collapsed;
             }
-            else if (_all.Count > 0)
+        }
+
+        private PolicyContactRow BuildRow(string id)
+        {
+            _known.TryGetValue(id, out var info);
+            return new PolicyContactRow
             {
-                ShowState("没有匹配「" + q + "」的联系人。", false);
-            }
+                Wxid = id,
+                Name = info != null && !string.IsNullOrEmpty(info.Display)
+                    ? info.Display
+                    : (id == "filehelper" ? "文件传输助手" : id),
+                Remark = info?.Remark ?? "",
+                IsGroup = info?.IsGroup
+                    ?? id.EndsWith("@chatroom", StringComparison.OrdinalIgnoreCase)
+            };
+        }
+
+        private bool IsBlacklist => _allowAllMute;
+
+        private void RenderPicker()
+        {
+            var q = (PickerSearch.Text ?? "").Trim();
+            var rows = _contacts
+                .Where(x => ContactDirectory.Matches(x, q))
+                .Where(x => !_chosen.Contains(x.Wxid))
+                .Select(x => new PickRow
+                {
+                    Wxid = x.Wxid,
+                    Name = x.Name,
+                    Remark = x.Remark,
+                    IsGroup = x.IsGroup,
+                    IsPicked = _pending.Contains(x.Wxid)
+                })
+                .ToList();
+            PickerList.ItemsSource = rows;
+
+            var message = _contactsFailed
+                ? "联系人接口还没就绪，先启动内核再添加。"
+                : (_contacts.Count == 0
+                    ? "联系人列表是空的，启动核心并同步后再试。"
+                    : (rows.Count == 0 ? "没有匹配「" + q + "」的联系人。" : ""));
+            PickerState.Text = message;
+            PickerState.Visibility = string.IsNullOrEmpty(message) ? Visibility.Collapsed : Visibility.Visible;
+            PickerList.Visibility = !_contactsFailed && rows.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
+            BtnAddPicked.IsEnabled = _pending.Count > 0;
         }
 
         private async Task SaveAsync()
         {
+            if (_preview) return;
             var res = await _saver.SaveAsync(BuildPatch);
             if (!res.Ok)
             {
                 Revert();
-                SetError("保存失败：" + Api.Message(res));
-                Status?.Invoke("名单保存失败，已恢复到上次保存的状态。");
+                Status?.Invoke("保存失败：" + Api.Message(res) + "，已恢复上次保存的名单。");
                 return;
             }
 
             _savedIds = new List<string>(_chosen);
             _savedAllMute = AllMuted;
-            SetError("");
-            Status?.Invoke("已保存 " + DateTime.Now.ToString("HH:mm:ss"));
+            Status?.Invoke("已保存 · " + DateTime.Now.ToString("HH:mm:ss"));
         }
 
         private IDictionary<string, object> BuildPatch()
@@ -253,33 +396,16 @@ namespace WhaleLauncher.Views
             _chosen.Clear();
             _chosen.AddRange(_savedIds);
             _applying = true;
-            try { AllMuteCheck.IsChecked = _savedAllMute; }
+            try { ChkAll.IsChecked = _savedAllMute; }
             finally { _applying = false; }
-            foreach (var item in _all) item.IsSelected = _chosen.Contains(item.Wxid);
-            ApplyAllMuteState();
-            UpdateList();
+            Render();
         }
 
-        private void RenderFooter()
+        private void ShowState(string text)
         {
-            FootText.Text = AllMuted
-                ? "已勾全部静音，将以 * 保存"
-                : "已选 " + _chosen.Count + " 个 · 勾选即保存";
-        }
-
-        private void ShowState(string text, bool error)
-        {
-            List.ItemsSource = null;
+            List.Visibility = Visibility.Collapsed;
             StateText.Text = text ?? "";
-            StateText.Foreground = error ? (Brush)FindResource("Bad") : (Brush)FindResource("Dim");
             StateText.Visibility = Visibility.Visible;
-        }
-
-        private void SetError(string text)
-        {
-            ErrorText.Text = text ?? "";
-            ErrorText.Visibility = string.IsNullOrEmpty(text) ? Visibility.Collapsed : Visibility.Visible;
-            if (!string.IsNullOrEmpty(text)) Status?.Invoke(text);
         }
     }
 }

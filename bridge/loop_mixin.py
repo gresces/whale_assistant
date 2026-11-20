@@ -237,6 +237,12 @@ class LoopMixin:
         """启动后预热发送通道，避免第一条回复慢 5~10 秒。"""
         G.time.sleep(3)
         try:
+            # 媒体下载器也先建好：data/image-key.json 里的密钥在启动日志里就能看到，
+            # 不用等到第一张图才初始化（建实例本身不扫微信内存）。
+            self._get_media()
+        except Exception as e:
+            G.log('媒体下载器预热失败（收到图片时会再试）：', repr(e))
+        try:
             if not self.selected_window_ready():
                 G.log('发送通道预热：等待确认已选微信账号，请打开该账号的微信主窗口')
                 return
@@ -493,7 +499,7 @@ class LoopMixin:
             G.REMINDER_RUNNER = G.start_reminder_watch(
                 http=G.LOCAL_HTTP, base=base, token=self.token,
                 send_text=self.send_text, send_at=self.send_at,
-                send_voice=self.send_voice_reply, display_name=self.display_name, log=G.log)
+                display_name=self.display_name, log=G.log)
             G.log('提醒调度已启动（到点准点发）')
             return G.REMINDER_RUNNER
         except Exception as e:

@@ -300,6 +300,10 @@ namespace WhaleLauncher
             }
         }
 
+        /// <summary>本进程启动的内核，或同一端口上已经在健康运行的外部内核，都算可用。</summary>
+        public async Task<bool> KernelReachableAsync()
+            => NodeRunning || await ReadHealthyNodePidAsync(Port) > 0;
+
         public string Url => $"http://127.0.0.1:{Port}";
 
         private async Task<int> ReadHealthyNodePidAsync(int port)
@@ -400,7 +404,7 @@ namespace WhaleLauncher
                 if (_bridgeRestarts.Count >= BridgeRestartCap)
                 {
                     _bridgeWanted = false;
-                    SayError("桥接 10 分钟内反复退出 " + _bridgeRestarts.Count + " 次，已停止自动重启（不是无限重启）。看「诊断」里的桥接日志，关掉视频号/链接预览窗口后再点启动。");
+                    SayError("桥接 10 分钟内反复退出 " + _bridgeRestarts.Count + " 次，已停止自动重启（不是无限重启）。看「微信 → 高级与日志」里的桥接日志，关掉视频号/链接预览窗口后再点启动。");
                     return;
                 }
                 _bridgeRestarts.Add(nowUtc);

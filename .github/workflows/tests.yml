@@ -179,11 +179,6 @@ jobs:
         timeout-minutes: 3
         run: node scripts/test-tasks.js --task voice-send --report artifacts/test-tasks/voice-send.json
 
-      - name: 插件安装与运行回归
-        if: always()
-        shell: pwsh
-        run: node scripts/test-tasks.js --task plugin-market --report artifacts/test-tasks/plugin-market.json
-
       - name: 启动器进程生命周期回归（模拟桥接）
         if: always()
         shell: pwsh

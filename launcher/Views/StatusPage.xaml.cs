@@ -23,6 +23,7 @@ namespace WhaleLauncher.Views
     public partial class StatusPage : UserControl, IRefreshable
     {
         private readonly RuntimeSupervisor _sup;
+        private readonly Func<Task> _restart;
 
         private DateTime _lastCare = DateTime.MinValue;
         private RuntimeSupervisor.CareState _care;
@@ -31,11 +32,13 @@ namespace WhaleLauncher.Views
         private string _recentJson = "";
         private Snapshot _status = new Snapshot();
 
-        public StatusPage(RuntimeSupervisor sup)
+        public StatusPage(RuntimeSupervisor sup, Func<Task> restart = null)
         {
             InitializeComponent();
             SmoothScroll.Attach(Recent);
             _sup = sup;
+            _restart = restart;
+            BtnRestart.Visibility = restart == null ? Visibility.Collapsed : Visibility.Visible;
             _recentTimer = new System.Windows.Threading.DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
             _recentTimer.Tick += async (_, __) => await PollRecentAsync();
             Loaded += async (_, __) => { _recentTimer.Start(); await PollRecentAsync(); };
@@ -72,7 +75,7 @@ namespace WhaleLauncher.Views
             NodeAge.Text = s.NodeUp ? (s.ExternalNode ? "后台启动 · " : "") + "已跑 " + Short(s.UptimeSec) : "";
             NodeSub.Text = s.NodeUp
                 ? $"端口 {s.Port} · {s.Provider}/{s.Model}{(!s.NeedsKey || s.HasKey ? "" : " · 还没有 Key")}{(s.Mock ? " · 演示模式" : "")}"
-                : "点顶栏 ⏻ 启动";
+                : "点顶栏启动";
 
             // 桥接
             DotBridge.Fill = s.BrOnline ? (Brush)FindResource("Ok")
@@ -107,7 +110,7 @@ namespace WhaleLauncher.Views
         /// <summary>本轮用量一行。没调过真模型（演示模式 / 还没聊过）就显示「—」，不猜。</summary>
         private static string FormatRoundUsage(Snapshot s)
         {
-            if (!s.HasUsage) return "本轮用量   —（还没调用过真实模型；演示模式没有用量）";
+            if (!s.HasUsage) return "本轮用量   —";
             var rate = s.UsHitRate * 100.0;
             var ratio = s.UsRatio * 100.0;
             var sign = ratio >= 0 ? "+" : "";
@@ -211,6 +214,14 @@ namespace WhaleLauncher.Views
         }
 
         // ── 动作 ────────────────────────────────────────────────
+        private async void OnRestart(object sender, RoutedEventArgs e)
+        {
+            if (_restart == null) return;
+            BtnRestart.IsEnabled = false;
+            try { await _restart(); }
+            finally { BtnRestart.IsEnabled = true; }
+        }
+
         private async void OnRefresh(object sender, RoutedEventArgs e)
         {
             _lastCare = DateTime.MinValue;

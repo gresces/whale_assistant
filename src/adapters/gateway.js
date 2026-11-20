@@ -218,11 +218,6 @@ class Gateway {
       senderName: msg.senderName,
       local,
     });
-    if (this.bot.messagePlugins && result.reason !== 'command') {
-      await this.bot.messagePlugins.run('chat.dispatched', this.bot.pluginContext({ key: this.bot.sessionKey(msg), msg }, {
-        delivery: { ok: out?.ok !== false, local: Boolean(out?.local), dryRun: Boolean(out?.dryRun) }
-      }));
-    }
     // 文字回执：发成功的她自己能从聊天记录里看见，不用记账；
     // 只有「根本没到微信」和「发失败」记下来，否则下一轮她会以为消息已经发出去了。
     try {
@@ -247,6 +242,7 @@ class Gateway {
           msg,
           stickerCategory: result.stickerCategory,
           stickerDemand: Boolean(result.stickerDemand),
+          assetJob: result.assetJob || null,
           error: Boolean(result.error),
         }, result.reply);
       }

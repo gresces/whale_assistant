@@ -35,7 +35,6 @@ async function saveLocalConfiguration(root, { path, body }, env = process.env) {
     case '/api/persona/preset/save': return savePersonaPreset(runtime, body);
     case '/api/persona/preset/delete': return deletePersonaPreset(runtime, body);
     case '/api/persona/preset/rename': return renamePersonaPreset(runtime, body);
-    case '/api/persona/preset/reset-market': return presets.resetMarketCopy(config, body.id);
     case '/api/persona/export': {
       const document = presets.fromConfig(config);
       return document.customPrompt.length <= 24000 ? { ok: true, persona: document }

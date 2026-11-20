@@ -28,12 +28,13 @@ param(
   # wechatauto 不在这里：它由仓库 vendor/wechatauto 提供（见 vendor/README.md）。
   # 下面这些是 vendor dist-info 里 Requires-Dist 的全集 + 本项目直接 import 的依赖——
   # 以前靠 wechatauto-replica 的传递依赖带去，现在必须显式列出来，漏一个桥接就 import 失败。
+  # opencv 用 headless：桥接只做图像匹配，不需要 GUI/Qt，安装体积小一半左右。
   [string[]]$Packages = @(
     'psutil==7.2.2', 'pywin32==312', 'requests==2.34.2',
     'uiautomation==2.0.29', 'comtypes==1.4.17',
     'colorama==0.4.6', 'Pillow==13.0.0', 'pyperclip==1.11.0',
     'cryptography==50.0.2', 'winsdk==1.0.0b10', 'imageio-ffmpeg==0.8.1',
-    'zstandard==0.25.0', 'opencv-python==5.0.0.93', 'pyautogui==0.9.54', 'silk-python==0.2.9'),
+    'zstandard==0.25.0', 'opencv-python-headless==5.0.0.93', 'pyautogui==0.9.54', 'silk-python==0.2.9'),
   [string]$Mirror = 'https://pypi.tuna.tsinghua.edu.cn/simple',
   [switch]$Force,
   [switch]$SkipNode
@@ -309,6 +310,10 @@ Get-ChildItem $pythonDir -Recurse -Directory -Filter '__pycache__' -ErrorAction 
 Get-ChildItem $sitePackages -Recurse -Directory -ErrorAction SilentlyContinue |
   Where-Object { $_.Name -in @('tests', 'test') } |
   Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+# cv2 自带的 videoio ffmpeg 后端只服务 VideoCapture；桥接只用 resize/matchTemplate/cvtColor，
+# 视频转码走 imageio-ffmpeg，删掉这份 ~29MB 的重复 DLL 不影响朋友圈图像匹配。
+Get-ChildItem (Join-Path $sitePackages 'cv2') -Filter 'opencv_videoio_ffmpeg*.dll' -File -ErrorAction SilentlyContinue |
+  Remove-Item -Force -ErrorAction SilentlyContinue
 $after = (Get-ChildItem $pythonDir -Recurse -File | Measure-Object Length -Sum).Sum
 Info ("  省了 {0:N1} MB（{1:N1} → {2:N1} MB）" -f (($before - $after) / 1MB), ($before / 1MB), ($after / 1MB))
 

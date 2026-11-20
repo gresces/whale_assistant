@@ -65,12 +65,13 @@ def image_key_note(db, downloader=None):
         cfg = None
     if not cfg and downloader is not None:
         cfg = getattr(downloader, '_cfg_dword', None)
-    cached = False
-    try:
-        workdir = str(getattr(db, 'workdir', '') or '')
-        cached = bool(workdir) and os.path.exists(os.path.join(workdir, 'image_keys.json'))
-    except Exception:
-        cached = False
+    cached = bool(getattr(downloader, '_whale_key_cache', False))
+    if not cached:
+        try:
+            workdir = str(getattr(db, 'workdir', '') or '')
+            cached = bool(workdir) and os.path.exists(os.path.join(workdir, 'image_keys.json'))
+        except Exception:
+            cached = False
     if cfg:
         return 'cfgDword 可用（能离线派生）'
     return 'cfgDword 不可用（只能扫微信进程内存；密钥缓存%s）' % ('有' if cached else '没有')
@@ -183,12 +184,31 @@ class ReceiverMixin:
                 return self._media_box['downloader']
             save_dir = G.os.path.join(G.ROOT, 'data', 'media-cache')
             G.os.makedirs(save_dir, exist_ok=True)
-            dl = self.MediaDownloader(self.db, save_dir=save_dir)
+            # 上次探测成功的密钥先直接注入：省掉每次启动重新扫微信进程内存。
+            # 文件缺失/损坏时安静忽略，照旧走自动探测。
+            cached_key = None
+            try:
+                from media_key_compat import load_cached_image_key
+                cached_key = load_cached_image_key(G.ROOT)
+            except Exception:
+                cached_key = None
+            opts = {'save_dir': save_dir}
+            if cached_key:
+                opts['image_key'] = cached_key
+            dl = self.MediaDownloader(self.db, **opts)
+            try:
+                dl._whale_key_cache = bool(cached_key)
+            except Exception:
+                pass
             from image_cache import bind_target_probe
             bind_target_probe(dl)
             try:
-                from media_key_compat import install_key_scan_guard
-                install_key_scan_guard(dl, log=G.log)
+                from media_key_compat import install_key_cache, install_key_scan_guard
+                install_key_scan_guard(dl, log=G.log, config=getattr(G, 'CURRENT_CONFIG', None))
+                install_key_cache(dl, root=G.ROOT, log=G.log,
+                                  wechat_version=getattr(self.db, 'version', ''))
+                if cached_key:
+                    G.log('图片密钥：已加载缓存（data/image-key.json）')
                 G.log('图片密钥：%s' % image_key_note(self.db, dl))
             except Exception as _e:
                 G.log('图片密钥扫描护栏没装上（不影响其它识别）：', repr(_e))
@@ -292,30 +312,92 @@ class ReceiverMixin:
             if not user or lid is None:
                 G.log('图片识别跳过：消息缺会话或消息 id')
                 return ''
+            media = self._get_media()
             path = None
             key_missing = False
+            thumb_tried = False
+            save_budget = [1]
+
+            def save_as_enabled():
+                cfg = getattr(G, 'CURRENT_CONFIG', None)
+                section = cfg.get('image') if isinstance(cfg, dict) else None
+                if not isinstance(section, dict):
+                    return True
+                value = section.get('uiSaveFallback', True)
+                if isinstance(value, str):
+                    return value.strip().lower() not in ('', '0', 'false', 'no', 'off')
+                return value is not False and value != 0
+
+            def save_as():
+                # C 兜底会抢焦点、右键、弹保存框：每次 describe_image 只允许一次，
+                # 关掉开关时直接跳过（留给后面的截图兜底）。
+                if not save_budget[0] or not save_as_enabled():
+                    return b''
+                save_budget[0] -= 1
+                try:
+                    saver = getattr(self, 'image_save_fallback', None)
+                    return saver(msg) if callable(saver) else b''
+                except Exception as exc:
+                    G.log_throttled('img-save-as:' + type(exc).__name__,
+                                    '另存为兜底失败 reason=%s' % type(exc).__name__)
+                    return b''
+
+            def key_ready(dl):
+                # 没有密钥时缩略图也解不开，重试只会多刷日志。
+                return bool(getattr(dl, '_img_key', None) or getattr(dl, '_image_key', None)
+                            or getattr(dl, '_cfg_dword', None))
+
+            def thumb_supported(dl):
+                tiers = getattr(dl, 'IMAGE_TIERS', None) or getattr(type(dl), 'IMAGE_TIERS', None)
+                if tiers:
+                    return 'thumb' in tiers
+                return callable(getattr(dl, 'download_image', None))
+
+            def record(path_got, tier):
+                if not path_got:
+                    return
+                G.log('图片档位：%s → %d KB' % (tier, G.os.path.getsize(path_got) // 1024))
+                origin = image_dir_note(getattr(self, 'db', None), path_got)
+                if origin and origin != '当前账号目录':
+                    G.log('图片来源：%s' % origin)
+
+            state = {'key_missing': False}
+
+            def download(tier):
+                # 只记原因类别，不把异常原文（可能带 .dat 路径）写进日志。
+                try:
+                    return media.download_image(user, int(lid), tier=tier, shard=shard)
+                except Exception as _e:
+                    if '密钥' in str(_e):
+                        # 密钥取不到时再等也不会变：后面的重试只是白等，直接转界面兜底。
+                        state['key_missing'] = True
+                    G.log_throttled('img-dl:%s:%s:%s:%s' % (lid, shard, tier, type(_e).__name__),
+                                    '图片下载失败（tier=%s type=%s）' % (tier, type(_e).__name__))
+                    return None
+
             for _attempt in range(4):
                 for _tier in ('full', 'best'):
-                    try:
-                        path = self._get_media().download_image(user, int(lid), tier=_tier, shard=shard)
-                    except Exception as _e:
-                        G.log('图片下载失败（tier=%s）：%r' % (_tier, _e))
-                        path = None
-                        # 密钥取不到时再等也不会变：后面的重试只是白等，直接转界面兜底。
-                        if '密钥' in str(_e):
-                            key_missing = True
+                    path = download(_tier)
                     if path:
-                        G.log('图片档位：%s → %d KB' % (_tier, G.os.path.getsize(path) // 1024))
-                        _origin = image_dir_note(getattr(self, 'db', None), path)
-                        if _origin and _origin != '当前账号目录':
-                            G.log('图片来源：%s' % _origin)
+                        record(path, _tier)
                         break
+                key_missing = state['key_missing']
                 if path or key_missing:
                     break
+                # 原图和压缩版都拿不到时，缩略图仍可能让视觉模型看出内容。
+                # 只有确实有密钥、且 vendor 支持这一档时才试一次，避免无意义的重试。
+                if not thumb_tried and key_ready(media) and thumb_supported(media):
+                    thumb_tried = True
+                    path = download('thumb')
+                    if path:
+                        record(path, 'thumb')
+                        break
+                    if state['key_missing']:
+                        break
                 if _attempt < 3:
                     G.log('图片缓存尚未就绪，等待重试（%d/3）' % (_attempt + 1))
                     G.time.sleep((0.5, 1.0, 2.0)[_attempt])
-            if key_missing and not path:
+            if state['key_missing'] and not path:
                 G.log('图片密钥取不到，跳过缓存重试，直接走界面兜底')
             raw = b''
             if path:
@@ -329,9 +411,12 @@ class ReceiverMixin:
                     _key_note = '密钥状态未知'
                 G.log_throttled('img-keys:' + _key_note,
                                 '图片密钥状态：%s；消息id=%s' % (_key_note, lid))
-                # 磁盘取图失败后直接读取已核对的微信预览，不重复等待原图落盘。
-                fallback = getattr(self, 'image_ui_fallback', None)
-                raw = fallback(msg) if callable(fallback) else b''
+                # 先试微信自己的「右键 → 另存为…」（原图，比截图清楚），
+                # 失败或关掉开关时再读取已核对的微信预览。
+                raw = save_as()
+                if not raw:
+                    fallback = getattr(self, 'image_ui_fallback', None)
+                    raw = fallback(msg) if callable(fallback) else b''
                 if not raw:
                     if isinstance(msg, dict):
                         msg['_media_fail'] = '本地图片解不开，界面兜底也没取到'
@@ -344,11 +429,13 @@ class ReceiverMixin:
                     conv = self._get_media()._wxgf_to_jpg(raw)
                 except Exception as _e:
                     conv = None
-                    G.log('wxgf 转码异常：', repr(_e))
+                    G.log('wxgf 转码异常 type=%s' % type(_e).__name__)
                 if not conv:
                     G.log('这张图是 wxgf/HEVC，本机 ffmpeg 没能转出来；改走界面兜底（请同时检查桥接启动时的 ffmpeg 状态）')
-                    fallback = getattr(self, 'image_ui_fallback', None)
-                    conv = fallback(msg) if callable(fallback) else b''
+                    conv = save_as()
+                    if not conv:
+                        fallback = getattr(self, 'image_ui_fallback', None)
+                        conv = fallback(msg) if callable(fallback) else b''
                     if not conv:
                         if isinstance(msg, dict):
                             msg['_media_fail'] = 'wxgf 转码失败，界面兜底也没取到'
@@ -396,7 +483,7 @@ class ReceiverMixin:
                     parts = [buf.getvalue()]
                     mime = 'image/jpeg'
             except Exception as _e:
-                G.log('图片预处理跳过（用原图）：', repr(_e))
+                G.log('图片预处理跳过（用原图） type=%s' % type(_e).__name__)
                 parts = [raw]
             texts = []
             for idx, part in enumerate(parts):
@@ -418,7 +505,8 @@ class ReceiverMixin:
         except Exception as e:
             if isinstance(msg, dict):
                 msg['_media_fail'] = type(e).__name__
-            G.log_throttled('img-exc:' + type(e).__name__, '图片识别失败：', repr(e))
+            G.log_throttled('img-exc:' + type(e).__name__,
+                            '图片识别失败 type=%s' % type(e).__name__)
             return ''
 
     def image_ui_fallback(self, msg):
@@ -431,7 +519,7 @@ class ReceiverMixin:
         try:
             import win32gui
             import win32process
-            from image_ui_fallback import build_preview_request, read_image_via_ui
+            from image_ui_fallback import build_preview_request, read_image_via_ui, reveal_target
 
             db = self.db
             pid = win32process.GetWindowThreadProcessId(hwnd)[1] if win32gui.IsWindow(hwnd) else 0
@@ -444,10 +532,26 @@ class ReceiverMixin:
                         and win32gui.IsWindow(hwnd)
                         and win32process.GetWindowThreadProcessId(hwnd)[1] == pid)
 
-            if not account_matches() or win32gui.GetForegroundWindow() != hwnd:
+            chat_name = self.display_name(msg.get('username') or '')
+            reveal_budget = [1]
+
+            def reveal_once():
+                """拉前台 + 滚到底最多一次；失败就不再折腾用户的窗口。"""
+                if not reveal_budget[0] or not account_matches():
+                    return False
+                reveal_budget[0] -= 1
+                try:
+                    ok = reveal_target({'hwnd': hwnd, 'pid': pid, 'chat': chat_name}, G.log)
+                except Exception as exc:
+                    G.log('图片预览兜底：拉前台/滚动失败 type=%s' % type(exc).__name__)
+                    return False
+                if ok:
+                    G.log('图片预览兜底：已把微信拉到前台并滚到底部，重试一次')
+                return bool(ok)
+
+            if not account_matches():
                 G.log('图片预览兜底跳过 reason=account_or_foreground_changed')
                 return b''
-            chat_name = self.display_name(msg.get('username') or '')
             request = build_preview_request(db, msg, chat_name, hwnd, pid)
             if request is None:
                 G.log('图片预览兜底跳过 reason=message_not_unique')
@@ -462,10 +566,22 @@ class ReceiverMixin:
                     G.log('图片预览兜底跳过 reason=gui_busy')
                     return b''
                 try:
-                    if not account_matches() or win32gui.GetForegroundWindow() != hwnd:
+                    if not account_matches():
                         G.log('图片预览兜底跳过 reason=account_or_foreground_changed')
                         return b''
-                    raw = read_image_via_ui(request, G.log)
+                    if win32gui.GetForegroundWindow() != hwnd:
+                        if not reveal_once() or not account_matches() \
+                                or win32gui.GetForegroundWindow() != hwnd:
+                            G.log('图片预览兜底跳过 reason=account_or_foreground_changed')
+                            return b''
+                    last = {}
+                    raw = read_image_via_ui(request, G.log, last=last)
+                    if not raw and last.get('reason') in ('message_not_aligned',
+                                                          'account_or_foreground_changed'):
+                        # 目标行不在可视区/窗口被抢走：只补一次拉前台 + 滚到底，不循环。
+                        if reveal_once() and account_matches() and win32gui.GetForegroundWindow() == hwnd:
+                            last = {}
+                            raw = read_image_via_ui(request, G.log, last=last)
                     if raw and not account_matches():
                         G.log('图片预览兜底丢弃 reason=account_changed')
                         return b''
@@ -476,6 +592,73 @@ class ReceiverMixin:
                 self.send_lock.release()
         except Exception as exc:
             G.log('图片预览兜底异常 type=%s' % type(exc).__name__)
+            return b''
+
+    def image_save_fallback(self, msg):
+        """C 兜底：让微信「右键 → 另存为…」把原图写进 data/media-cache。
+
+        拿到的是微信自己解出来的原图，比截预览窗清楚；只在磁盘取图失败时调用。
+        子进程负责全部界面动作和收尾，主线程只等固定时限。
+        """
+        account = self.ACCOUNT
+        hwnd = int(account.get('hwnd') or 0)
+        if not hwnd or not account.get('verified'):
+            G.log('图片另存为兜底跳过 reason=account_unverified')
+            return b''
+        try:
+            import win32gui
+            import win32process
+            from image_save_as import (
+                build_save_request, save_image_via_ui, save_target_path, save_timeout,
+            )
+
+            db = self.db
+            pid = win32process.GetWindowThreadProcessId(hwnd)[1] if win32gui.IsWindow(hwnd) else 0
+
+            def account_matches():
+                current = self.ACCOUNT
+                return (pid and self.db is db and current.get('verified')
+                        and current.get('hwnd') == hwnd and current.get('pid') in (None, 0, pid)
+                        and self.configured_account_dir() in ('', db.account)
+                        and win32gui.IsWindow(hwnd)
+                        and win32process.GetWindowThreadProcessId(hwnd)[1] == pid)
+
+            if not account_matches():
+                G.log('图片另存为兜底跳过 reason=account_or_foreground_changed')
+                return b''
+            chat_name = self.display_name(msg.get('username') or '')
+            request = build_save_request(db, msg, chat_name, hwnd, pid,
+                                         save_target_path(G.ROOT, msg))
+            if request is None:
+                G.log('图片另存为兜底跳过 reason=message_not_unique')
+                return b''
+            timeout = save_timeout(getattr(G, 'CURRENT_CONFIG', None))
+
+            # 与预览兜底一致：先占发送锁再占界面锁，子进程退出后立即释放。
+            if not self.send_lock.acquire(timeout=1.0):
+                G.log('图片另存为兜底跳过 reason=send_busy')
+                return b''
+            try:
+                if not self.gui_lock.acquire(timeout=1.0):
+                    G.log('图片另存为兜底跳过 reason=gui_busy')
+                    return b''
+                try:
+                    if not account_matches():
+                        G.log('图片另存为兜底跳过 reason=account_or_foreground_changed')
+                        return b''
+                    last = {}
+                    raw = save_image_via_ui(request, G.log, timeout=timeout, last=last)
+                    if raw and not account_matches():
+                        G.log('图片另存为兜底丢弃 reason=account_changed')
+                        return b''
+                    return raw
+                finally:
+                    self.gui_lock.release()
+            finally:
+                self.send_lock.release()
+        except Exception as exc:
+            G.log_throttled('img-save-as-exc:' + type(exc).__name__,
+                            '另存为兜底失败 reason=%s' % type(exc).__name__)
             return b''
 
     def describe_emoji(self, msg):
@@ -633,6 +816,39 @@ class ReceiverMixin:
             sender = msg.get('sender_username') or ''
             if sender == self.me:
                 skipped('自己发出的消息')
+                return
+            # 发言范围必须在任何媒体处理之前：内核拦回复是在生成之后，这里先拦
+            # 才能省掉图片下载/视觉识别/无谓的 webhook 和失败日志。
+            try:
+                from scope import message_denial, reason_label
+                _scope_chat_name = ''
+                if username.endswith('@chatroom'):
+                    try:
+                        _scope_chat_name = self.display_name(username)
+                    except Exception:
+                        _scope_chat_name = ''
+                _scope_sender_name = ''
+                try:
+                    _scope_sender_name = self.db.get_nickname(sender) or ''
+                except Exception:
+                    _scope_sender_name = ''
+                _denial = message_denial(
+                    msg, display_name=_scope_chat_name, sender_name=_scope_sender_name,
+                    config_path=getattr(G, 'CONFIG_PATH', ''),
+                )
+            except Exception as _e:
+                # 名单检查本身坏了也不能让接收端停摆：照常处理，留一条可定位的日志。
+                _denial = None
+                G.log_throttled('scope-error:' + type(_e).__name__,
+                                '发言范围检查失败（照常处理） type=%s' % type(_e).__name__)
+            if _denial:
+                G.log_throttled(
+                    'msg-scope:%s:%s' % (_denial, username),
+                    '消息跳过：%s；会话=%s 消息id=%s:%s'
+                    % (reason_label(_denial), G.safe_id(username),
+                       msg.get('shard') or '', msg.get('local_id')),
+                    ttl=60,
+                )
                 return
             mtype = msg.get('type') or ''
             content = G.fix_garbled((msg.get('content') or '').strip())

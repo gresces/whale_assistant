@@ -2,7 +2,7 @@
 
 const personaStore = require('../../persona/store');
 const presets = require('../../persona/presets');
-const { applyPersonaPatch, savePersonaPreset, deletePersonaPreset, renamePersonaPreset, currentPersonaWarnings } = require('./service');
+const { applyPersonaPatch, savePersonaPreset, deletePersonaPreset, renamePersonaPreset, currentPersonaWarnings, personaPrompt, savePersonaBlock, createPersonaBlock, deletePersonaBlock } = require('./service');
 const { checkPersonaTokens } = require('../../persona/tokenCheck');
 const styleProfile = require('../../persona/styleProfile');
 const { json, readBody } = require('../../http/util');
@@ -33,6 +33,38 @@ module.exports = function register(router) {
   router.post('/api/persona', async (runtime, req, res) => {
     const body = await readBody(req);
     const result = await applyPersonaPatch(runtime, body);
+    return json(res, result && result.ok ? 200 : 400, result);
+  });
+
+  /* ------------------------- 提示词画布（契约 v1） ------------------------- */
+
+  // 只读预览：段落映射 + 模型实际收到的 system / tail，不写任何配置。
+  router.get('/api/persona/prompt', (runtime, req, res, info) => {
+    const query = {
+      chatType: info.url.searchParams.get('chatType'),
+      isMaster: info.url.searchParams.get('isMaster'),
+    };
+    return json(res, 200, personaPrompt(runtime, query));
+  });
+
+  // 文本段保存：只接受 personality / background / custom / custom-*。
+  router.post('/api/persona/block', async (runtime, req, res) => {
+    const body = await readBody(req);
+    const result = savePersonaBlock(runtime, body);
+    return json(res, result && result.ok ? 200 : 400, result);
+  });
+
+  // 新增自定义段落：返回新 id 和新预览。
+  router.post('/api/persona/blocks', async (runtime, req, res) => {
+    const body = await readBody(req);
+    const result = createPersonaBlock(runtime, body);
+    return json(res, result && result.ok ? 200 : 400, result);
+  });
+
+  // DELETE 带路径参数，router 的精确匹配做不到：用正则模式，并自己挡掉其它方法。
+  router.pattern(/^\/api\/persona\/blocks\/([^/]+)$/, (runtime, req, res, info) => {
+    if (info.method !== 'DELETE') return json(res, 405, { ok: false, error: 'method not allowed' });
+    const result = deletePersonaBlock(runtime, info.params[0]);
     return json(res, result && result.ok ? 200 : 400, result);
   });
 
@@ -95,12 +127,6 @@ module.exports = function register(router) {
     });
   });
 
-  router.post('/api/persona/preset/reset-market', async (runtime, req, res) => {
-    const body = await readBody(req);
-    const result = presets.resetMarketCopy(runtime.config, body && body.id);
-    return json(res, result.ok ? 200 : 400, result);
-  });
-
   // 另存为 / 更新自建预设
   router.post('/api/persona/preset/save', async (runtime, req, res) => {
     const body = await readBody(req);
@@ -108,7 +134,7 @@ module.exports = function register(router) {
     return json(res, result && result.ok ? 200 : 400, result);
   });
 
-  // 删除预设：自建物理删，内置/市场隐藏；正在使用的不许删
+  // 删除预设：自建物理删，内置隐藏；正在使用的不许删
   router.post('/api/persona/preset/delete', async (runtime, req, res) => {
     const body = await readBody(req);
     const result = deletePersonaPreset(runtime, body);

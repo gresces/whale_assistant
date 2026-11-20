@@ -10,6 +10,7 @@ import time
 from contextlib import redirect_stdout
 
 CAPTURE_TIMEOUT = 12
+REVEAL_TIMEOUT = 8
 MAX_IMAGE_BYTES = 8 * 1024 * 1024
 MAX_HISTORY = 120
 MAX_REQUEST_BYTES = 128 * 1024
@@ -166,12 +167,23 @@ def capture_preview_image(request, *, win, process, uia, locator, inp, grab, pau
                 pass
 
 
-def read_image_via_ui(request, log, *, timeout=CAPTURE_TIMEOUT, run=None):
-    """父进程只等固定时限。UIA 或截图库挂起时，由 subprocess 终止并回收子进程。"""
+def _note_reason(last, reason):
+    """把失败原因交给调用方；不改变原来「失败返回空字节」的约定。"""
+    if last is not None:
+        last['reason'] = reason
+
+
+def read_image_via_ui(request, log, *, timeout=CAPTURE_TIMEOUT, run=None, last=None):
+    """父进程只等固定时限。UIA 或截图库挂起时，由 subprocess 终止并回收子进程。
+
+    ``last`` 可选：失败时写入 ``{'reason': ...}``，调用方据此决定要不要
+    「拉前台 + 滚到底」再试一次。成功时不会写入。
+    """
     try:
         payload = json.dumps(request, ensure_ascii=False).encode('utf-8')
         if len(payload) > MAX_REQUEST_BYTES:
             log('图片预览兜底跳过 reason=request_too_large')
+            _note_reason(last, 'request_too_large')
             return b''
         result = (run or subprocess.run)(
             [sys.executable, '-X', 'utf8', '-B', os.path.abspath(__file__), '--capture-preview'],
@@ -180,21 +192,87 @@ def read_image_via_ui(request, log, *, timeout=CAPTURE_TIMEOUT, run=None):
         )
     except subprocess.TimeoutExpired:
         log('图片预览兜底子进程超时，已停止（%.0f 秒）' % timeout)
+        _note_reason(last, 'timeout')
         return b''
     except Exception as exc:
         log('图片预览兜底启动失败 type=%s' % type(exc).__name__)
+        _note_reason(last, 'start_failed')
         return b''
     if result.returncode:
         code = result.returncode
         reason = FAILURES[code] if 0 < code < len(FAILURES) else 'worker_exited'
         log('图片预览兜底未取到图 reason=%s code=%s' % (reason, code))
+        _note_reason(last, reason)
         return b''
     data = result.stdout
     if not data.startswith(b'\xff\xd8\xff') or len(data) > MAX_IMAGE_BYTES:
         log('图片预览兜底未取到图 reason=invalid_capture')
+        _note_reason(last, 'invalid_capture')
         return b''
     log('图片预览兜底已取图（%d KB）' % (len(data) // 1024))
     return data
+
+
+def reveal_target(request, log, *, timeout=REVEAL_TIMEOUT, run=None):
+    """把微信拉到前台并把消息列表滚到底部。
+
+    只在 ``message_not_aligned`` / ``account_or_foreground_changed`` 时调用。
+    和截图一样跑在限时子进程里：UIA 挂起也不会把桥接的消息线程钉住。
+    """
+    try:
+        payload = json.dumps(request, ensure_ascii=False).encode('utf-8')
+        result = (run or subprocess.run)(
+            [sys.executable, '-X', 'utf8', '-B', os.path.abspath(__file__), '--reveal-target'],
+            input=payload, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            timeout=timeout, creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0),
+        )
+    except subprocess.TimeoutExpired:
+        log('图片预览兜底：拉前台/滚动超时（%.0f 秒）' % timeout)
+        return False
+    except Exception as exc:
+        log('图片预览兜底：拉前台/滚动启动失败 type=%s' % type(exc).__name__)
+        return False
+    if result.returncode:
+        code = result.returncode
+        reason = FAILURES[code] if 0 < code < len(FAILURES) else 'worker_exited'
+        log('图片预览兜底：拉前台/滚到底失败 reason=%s code=%s' % (reason, code))
+        return False
+    return True
+
+
+def _reveal_worker():
+    """子进程侧：核实窗口归属 → 拉到前台 → 消息列表滚到底。"""
+    try:
+        payload = sys.stdin.buffer.read(MAX_REQUEST_BYTES + 1)
+        if len(payload) > MAX_REQUEST_BYTES:
+            return 1
+        request = json.loads(payload.decode('utf-8'))
+        import win32gui as win
+        import win32process as process
+
+        hwnd, pid = int(request.get('hwnd') or 0), int(request.get('pid') or 0)
+        if (not hwnd or not win.IsWindow(hwnd)
+                or process.GetWindowThreadProcessId(hwnd)[1] != pid):
+            return FAILURES.index('wechat_not_foreground')
+        from window_activation import activate
+        activate(hwnd)
+        if win.GetForegroundWindow() != hwnd:
+            return FAILURES.index('wechat_not_foreground')
+        import uiautomation as auto
+        from wechatauto.uia_driver import WeChatUIA
+
+        uia = WeChatUIA(hwnd=hwnd, search_timeout=0.5)
+        root = auto.ControlFromHandle(hwnd)
+        if root is None or root.ProcessId != pid or root.NativeWindowHandle != hwnd:
+            return FAILURES.index('wechat_not_foreground')
+        # 直接使用已存在的控件树，避免重新搜窗、激活或建立第二个数据库连接。
+        uia._win = root
+        if uia._message_list() is None:
+            return FAILURES.index('message_not_aligned')
+        uia.scroll_message_list_to_bottom(max_rounds=8)
+        return 0
+    except Exception:
+        return 1
 
 
 def _worker():
@@ -239,3 +317,6 @@ def _worker():
 
 if __name__ == '__main__' and sys.argv[1:] == ['--capture-preview']:
     sys.exit(_worker())
+
+if __name__ == '__main__' and sys.argv[1:] == ['--reveal-target']:
+    sys.exit(_reveal_worker())

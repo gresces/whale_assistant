@@ -18,10 +18,12 @@ test('API 卡片均有测试入口，并先保存当前字段再测试', () => {
   assert.match(settings, /模型调用成功/);
 });
 
-test('API 接入：四个页签 + 搜索 API 单开关 + 关闭清列表删 Key', () => {
+test('API 接入：默认聊天模型 + 高级里看图/语音/搜索 + 搜索 API 单开关', () => {
   assert.match(settings, /Card\("API 接入"/);
-  for (const tab of ['聊天（文本）', '看图（视觉）', '语音（识别）', '搜索']) {
-    assert.ok(settings.includes(tab), '缺少页签：' + tab);
+  assert.match(settings, /"聊天模型"/);
+  assert.match(settings, /Header = "高级",\s*IsExpanded = false/);
+  for (const tab of ['看图（视觉）', '语音（识别）', '搜索']) {
+    assert.ok(settings.includes(tab), '高级折叠缺少页签：' + tab);
   }
   assert.match(settings, /websearch\.api\.enabled/);
   assert.match(settings, /websearch\.api\.providers/);

@@ -3,11 +3,10 @@
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              Background="Transparent">
 
-    <Grid Margin="28,24,32,20">
+    <Grid x:Name="PageRoot" Margin="24,20,24,20">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto" />
             <RowDefinition Height="*" />
-            <RowDefinition Height="Auto" />
             <RowDefinition Height="Auto" />
         </Grid.RowDefinitions>
 
@@ -50,8 +49,8 @@
                     <Border DockPanel.Dock="Top" BorderBrush="{DynamicResource Line}" BorderThickness="0,0,0,1" Padding="10,7">
                         <DockPanel LastChildFill="False">
                             <StackPanel DockPanel.Dock="Left" Orientation="Horizontal" VerticalAlignment="Center">
-                                <TextBlock Text="内核日志" Style="{StaticResource H2}" VerticalAlignment="Center" Margin="0,0,12,0" />
-                                <TextBlock Text="（桥接的日志在「微信 · 桥接」页）" Style="{StaticResource Small}" VerticalAlignment="Center" />
+                                <TextBlock Text="内核日志" Style="{StaticResource H2}" VerticalAlignment="Center" Margin="0,0,12,0"
+                                           ToolTip="桥接日志在「微信 → 高级与日志」" />
                                 <CheckBox x:Name="ChkErrors" Content="仅异常" Margin="12,0,0,0" VerticalAlignment="Center" Click="OnFilterChanged" />
                                 <TextBox x:Name="TxtSearch" Width="130" Margin="12,0,0,0" TextChanged="OnSearchChanged" ToolTip="搜关键字" />
                             </StackPanel>
@@ -68,7 +67,7 @@
                     </Border>
 
                     <ListBox x:Name="Logs" Background="Transparent" BorderThickness="0"
-                             FontFamily="Cascadia Mono, Consolas, monospace" FontSize="11.5"
+                             FontFamily="Cascadia Mono, Consolas, monospace" FontSize="12"
                              ScrollViewer.HorizontalScrollBarVisibility="Disabled"
                              VirtualizingStackPanel.IsVirtualizing="True"
                              VirtualizingPanel.VirtualizationMode="Recycling">
@@ -107,8 +106,9 @@
             </Border>
         </Grid>
 
-        <!-- 底部：路径 / 运行时 / 通道 -->
-        <Grid Grid.Row="2" Margin="0,12,0,0">
+        <!-- 底部：路径 / 运行时 / 通道 + 数据维护按顺序排在同一行 -->
+        <StackPanel Grid.Row="2" Margin="0,12,0,0">
+        <Grid>
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="*" />
                 <ColumnDefinition Width="12" />
@@ -131,7 +131,7 @@
         </Grid>
 
         <!-- 数据维护：备份 / 恢复 / 重置（都是本机操作，不用再开 bat） -->
-        <Border Grid.Row="3" Style="{StaticResource Card}" Padding="14,10" Margin="0,12,0,0">
+        <Border Style="{StaticResource Card}" Padding="14,10" Margin="0,12,0,0">
             <DockPanel>
                 <TextBlock DockPanel.Dock="Left" Text="数据维护" Style="{StaticResource Label}"
                            VerticalAlignment="Center" Margin="0,0,14,0" />
@@ -149,5 +149,6 @@
                            Text="备份出来的文件默认不含 Key；恢复前会自动留一份当前记忆。" />
             </DockPanel>
         </Border>
+        </StackPanel>
     </Grid>
 </UserControl>

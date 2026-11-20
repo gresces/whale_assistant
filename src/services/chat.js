@@ -63,7 +63,7 @@ async function handleChat(runtime, req, res) {
 
     let result;
     try {
-      // 保留真实上游流和取消；先定稿再发正文，避免插件改写或控制标记已经外泄。
+      // 保留真实上游流和取消；先定稿再发正文，避免控制标记已经外泄。
       let full = '';
       for await (const piece of bot.generate(decision, { signal: abort.signal })) {
         if (closed) break;
@@ -72,7 +72,11 @@ async function handleChat(runtime, req, res) {
         full += text;
       }
       if (closed) return res.end();
-      if (decision.action !== 'command') full = await bot.transformPluginReply(decision, full.trim());
+      if (decision.action !== 'command') {
+        // 定稿前再确认一次本轮仍有回复资格，并夹住最终长度。
+        if (!bot.activateReply(decision)) full = '';
+        else { bot.checkReplyLength(full.length); full = full.trim(); }
+      }
       if (closed) return res.end();
       result = bot.finalizeReply(decision, full);
     } catch (err) {
@@ -91,6 +95,7 @@ async function handleChat(runtime, req, res) {
       reason: result.reason, mock: Boolean(decision.mock),
       ...(decision.action === 'command' || decision.canned ? { commandType: decision.commandType || '' } : {}),
       ...(result.error ? { error: true } : {}),
+      ...(result.draft ? { draft: true, pendingId: result.pendingId || '' } : {}),
       ...(result.stickerCategory ? { stickerCategory: result.stickerCategory } : {}),
       ...(result.separateText ? { separateText: true } : {}),
     });

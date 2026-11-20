@@ -17,7 +17,7 @@ bun test --isolate tests      # 或 npm run test:bun
 不需要再写 `tests/*.test.js`。只想跑受影响文件时直接列文件名：
 
 ```powershell
-bun test tests/javascript-plugins.test.js tests/javascript-plugin-pipeline.test.js
+bun test tests/bot.test.js tests/scripts.test.js
 ```
 
 Node 的脚本全部保留，CI 和不想装 Bun 的协作者继续用：
@@ -33,7 +33,6 @@ node scripts/check-layers.js
   文件之间泄漏的计时器、`process.env`、模块缓存不会互相污染。
 - 不加 `--isolate` 时 Bun 默认在同一进程里顺序执行文件，泄漏的句柄可能影响后续文件。
 - 调试单个文件不需要隔离；复现“单跑绿、全量红”时先加 `--isolate` 再判断。
-- `tests/plugin-market/` 里的 C# 用例不由 `bun test` 执行，仍走 `dotnet` / CI。
 
 ## 与 Node 的差异
 
@@ -41,14 +40,12 @@ node scripts/check-layers.js
 | --- | --- | --- |
 | 测试命令 | `node --test` | `bun test`（内建 runner，断言兼容 `node:assert`） |
 | 并发参数 | `--test-concurrency=4` | 该参数被忽略；用 `--max-concurrency` 或 `--parallel` |
-| `require('node:module')` | `Module#_compile` / `entry.require` 可用 | 实例没有 `.require` / `._compile`，插件 worker 已改用 `createRequire` + `new Function` |
-| 子进程 | `process.execPath` 是 node | 是 bun；JS 插件 worker 在 Bun 下也跑 Bun |
+| `require('node:module')` | `Module#_compile` / `entry.require` 可用 | 实例没有 `.require` / `._compile` |
+| 子进程 | `process.execPath` 是 node | 是 bun |
 | V8 / Wasm 参数 | `--max-old-space-size` 生效 | 不保证生效；Wasm 内存上限、GC 行为可能与 Node 不同 |
 | 启动参数 | 原样传给 Node | Bun 会忽略不认识的 V8 参数，不要在脚本里依赖 |
 
-Api 4 的 JavaScript 插件按“可信原生代码”运行，不是沙箱；worker 外壳的差异只影响
-加载方式，权限模型不变。插件里 `require('whale')`、`require('node:fs')` 和相对路径
-`require('./x')` 在两种运行时下都按插件数据目录解析。
+项目不再支持外部插件，Bun 的差异只按内核、桥接和测试入口评估。
 
 ## 已知限制
 

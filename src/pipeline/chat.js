@@ -19,6 +19,9 @@
  */
 const path = require('node:path');
 const persona = require('../persona');
+const selfModel = require('../persona/selfModel');
+const access = require('../security/access');
+const extractor = require('../memory/extractor');
 const features = require('../infra/features');
 const { matchMaster, isVerifiedOwner } = require('../core/master');
 const links = require('../adapters/links');
@@ -50,8 +53,6 @@ const envInfo = require('../services/envInfo');
 const { LIMITS } = require('../memory/constants');
 const tokenCalibration = require('../memory/calibration');
 const budgetPricing = require('../services/budget');
-const { MessagePlugins } = require('../services/messagePlugins');
-const { JavaScriptPlugins, PluginRuntime } = require('../services/javascriptPlugins');
 const SEPARATE_REPLY_RE = /(?:^|[，。！？\s])(?:请|麻烦|能不能|可以|记得)?\s*你?\s*(?:要|给我)?\s*(?:分[条段开](?:来)?(?:发(?:送)?|回(?:复)?|说)|(?:一条一条|一句一句)地?[发回]|每(?:条|句|段)(?:话)?单独[发回]|分(?:成)?[两二三四五六七八九十\d]+[条段](?:气泡|发|回)?)(?:一下)?(?=$|[\s，。！？?!吧嘛哦啊,])/;
 
 /** 管理员能用的全部命令：魔咒验证成功后直接回这份清单，配「帮助」也用它 */
@@ -149,10 +150,6 @@ class Bot {
       globalCap: GLOBAL_REPLY_CAP_PER_MINUTE });
     this.lastBudget = null;
     this.lastUsage = null;
-    const pluginOptions = { dataDir: config.paths?.dataDir || path.join(process.cwd(), 'data'), logger };
-    this.javascriptPlugins = new JavaScriptPlugins({ ...pluginOptions,
-      enabled: () => features.isOn(this.config, 'javascriptPlugins') });
-    this.messagePlugins = new PluginRuntime(new MessagePlugins(pluginOptions), this.javascriptPlugins);
   }
 
   /** 按 provider|model 分别学习估算倍数；默认落在 data/calibration.json。 */
@@ -177,6 +174,107 @@ class Bot {
   sessionKey(msg) {
     const type = msg.chatType === 'group' ? 'g' : 'u';
     return `${msg.platform}:${type}:${msg.chatId}`;
+  }
+
+  /**
+   * 这一条消息是否处于「在岗」。
+   *
+   * 生效条件（契约 §4）：features.selfModel + 总开关 + 时段 + 对象策略非 off。
+   * 另外两条安全边界：
+   *   - 只对微信生效（web/桥接自测不冒充主人）；
+   *   - 主人自己说话时不触发（否则会对着主人自称主人）。
+   * 群聊按群 ID 取策略，群内个人不单独提权。
+   */
+  onDutyContext(msg, { isMaster = false, policy = null, now = Date.now() } = {}) {
+    if (!features.isOn(this.config, 'selfModel')) return null;
+    if (!msg || msg.platform !== 'wechat' || isMaster) return null;
+    const objectId = String(msg.chatId || '');
+    if (!objectId) return null;
+    const contact = policy || access.policyFor(access.loadDoc(this.config), objectId);
+    const status = selfModel.onDutyStatus(this.config, contact, now);
+    if (!status.active) return null;
+    let model;
+    try {
+      selfModel.ensureDefaultFiles(this.config);
+      model = selfModel.load(this.config);
+    } catch (err) {
+      this.logger?.warn?.('[self] 读取自我模型失败，本轮按普通助手处理：' + describeError(err));
+      return null;
+    }
+    return { model, policy: contact, mode: status.mode, objectId, status };
+  }
+
+  /** L2 覆盖项：只对当前对象生效，不写回 L1。 */
+  l2Overrides(profile) {
+    if (!profile) return null;
+    const ov = profile.overrides && typeof profile.overrides === 'object' ? profile.overrides : null;
+    const toneOverride = String((ov && ov.toneOverride) || '').trim().slice(0, 120);
+    const addressAs = String((ov && ov.addressAs) || '').trim().slice(0, 40);
+    const tabooTopics = Array.isArray(ov && ov.tabooTopics)
+      ? ov.tabooTopics.map((item) => String(item || '').trim()).filter(Boolean).slice(0, 10)
+      : [];
+    if (!toneOverride && !addressAs && !tabooTopics.length) return null;
+    return { toneOverride, addressAs, tabooTopics };
+  }
+
+  /** 对象策略里的显式覆盖优先于记忆卡里的 L2 覆盖；两者都不改 L1。 */
+  onDutyOverrides(policy, profile) {
+    const card = this.l2Overrides(profile) || {};
+    const p = policy || {};
+    const toneOverride = String(p.toneOverride || card.toneOverride || '').trim();
+    const addressAs = String(p.addressAs || card.addressAs || '').trim();
+    const tabooTopics = (Array.isArray(p.tabooTopics) && p.tabooTopics.length)
+      ? p.tabooTopics
+      : (card.tabooTopics || []);
+    if (!toneOverride && !addressAs && !tabooTopics.length) return null;
+    return { toneOverride, addressAs, tabooTopics };
+  }
+
+  /** L2 快照：只来自当前 chat + 当前说话人的卡，不跨对象。 */
+  l2Snapshot(profile) {
+    if (!profile) return null;
+    return {
+      preferences: Array.isArray(profile.notes) ? profile.notes : [],
+      threads: Array.isArray(profile.threads) ? profile.threads : [],
+      overrides: profile.overrides || null,
+    };
+  }
+
+  /**
+   * 把通过权限校验的资产放进现有附件队列；一条回复最多一个。
+   * 桥接的通用附件通道直接读 data/share/files 下的绝对路径，不再复制到表情包库。
+   */
+  queueAssetJob(decision, resolved) {
+    if (!this.stickerService || !features.isOn(this.config, 'shareAssets')) return null;
+    const asset = resolved && resolved.asset;
+    if (!asset) return null;
+    try {
+      const msg = (decision && decision.msg) || {};
+      const job = this.stickerService.enqueueAsset({
+        path: resolved.file,
+        title: asset.title,
+        chat: msg.chatTitle || msg.chatId || '',
+        chatUsername: msg.chatId || '',
+        key: decision.key || '',
+      });
+      return job;
+    } catch (err) {
+      this.logger?.warn?.('[self] 资产入队失败：' + describeError(err));
+      return null;
+    }
+  }
+
+  /** 资产被权限拒绝时，在【最近做过的事】里留一条，不把正文写进日志。 */
+  noteAssetDenied(decision, reason) {
+    try {
+      const key = decision && decision.key;
+      if (!key || !this.store) return;
+      this.store.appendEvent(key, {
+        type: 'asset',
+        detail: reason === 'denied' ? '权限拒绝' : '资产校验失败',
+        status: 'denied',
+      });
+    } catch { /* 记账失败不影响回复 */ }
   }
 
   /**
@@ -391,16 +489,6 @@ class Bot {
     try {
       decision = await this._decide(rawMsg, turn);
       this._replyTurns.set(decision, turn);
-      if (decision.action === 'reply' && !turn.cancelled) {
-        const output = await this.messagePlugins.run('chat.prompt', this.pluginContext(decision, { system: decision.system }));
-        decision.system = output.system;
-        const generated = await this.messagePlugins.run('chat.generate', this.pluginContext(decision));
-        if (generated.text !== undefined) {
-          decision.canned = generated.text;
-          decision.text = generated.text;
-          if (!generated.text.trim()) { decision.action = 'ignore'; decision.reason = 'plugin_empty'; }
-        }
-      }
       if (turn.cancelled) { decision.action = 'ignore'; decision.reason = 'cancelled'; }
       if (decision.action === 'ignore') this.releaseReply(decision);
       else {
@@ -556,6 +644,24 @@ class Bot {
     }
 
     const hasText = Boolean(clean.text);
+    // 先认主人：L2 条目的 about + 默认域都取决于「这句话是谁说的」。
+    // 真正的权限判断仍在后面（isVerifiedOwner），这里只用于记忆标注。
+    const masterHitEarly = matchMaster(this.config, msg);
+    const isMasterEarly = masterHitEarly.isMaster;
+    // 对象策略：私聊按 wxid、群聊按群 ID（契约 §1 / §3）。
+    // 总开关关着时完全不去读策略文件，保证关闭在岗时助手行为与之前一致。
+    let policyDoc = null;
+    let objectPolicy = null;
+    let onDuty = null;
+    if (this.config.onDuty && this.config.onDuty.enabled === true) {
+      try {
+        policyDoc = access.loadDoc(this.config);
+        objectPolicy = access.policyFor(policyDoc, msg.chatId);
+        onDuty = this.onDutyContext(msg, { isMaster: isMasterEarly, policy: objectPolicy, now: nowMs });
+      } catch (err) {
+        this.logger?.warn?.('[self] 读取联系人策略失败，本轮按普通助手处理：' + describeError(err));
+      }
+    }
     let appended = null;
     if (hasText && !msg.recycled) {
       // 落库失败不能拖死这一轮：记忆/原文是加分项，回复本身要继续。
@@ -573,10 +679,43 @@ class Bot {
           inferredTargetNames: msg.inferredTargetNames || [],
           replyToName: msg.replyToName,
           replyToUserId: msg.replyToUserId,
+          // L2 写入规则（契约 §11.2）：只有主人自己的话才是 self，其余一律 other。
+          about: isMasterEarly ? 'self' : 'other',
+          // 默认域 = 当前对象的域；未登记对象没有可继承的域，留空（不默认 public）。
+          scopes: objectPolicy && objectPolicy.known ? objectPolicy.scopes : [],
         });
       } catch (err) {
         if (this.logger) this.logger.error('写入用户消息失败（继续回复）：' + describeError(err));
       }
+    }
+    // 主人自己的明确自述 / 记忆指令才写 L1；对象披露永远留在 L2（契约 §11.2）。
+    if (isMasterEarly && hasText && !msg.recycled
+        && this.config.onDuty && this.config.onDuty.enabled === true
+        && features.isOn(this.config, 'selfModel')
+        && objectPolicy && objectPolicy.known) {
+      try {
+        for (const fact of selfModel.masterFactFromText(clean.text)) {
+          selfModel.rememberKnowledge(this.config, {
+            ...fact,
+            scopes: objectPolicy.scopes,
+            source: { uid: msg.senderId, chatId: msg.chatId, messageId: appended?.id || msg.msgId || '', at: nowMs },
+          });
+        }
+      } catch (err) {
+        this.logger?.warn?.('[self] 主人事实写入共享层失败：' + describeError(err));
+      }
+    }
+    // 在岗：静态人设进 system，动态切片进最后一条 user 消息（与 memory block 同位置）。
+    if (onDuty) {
+      msg.onDuty = {
+        model: onDuty.model,
+        policy: onDuty.policy,
+        overrides: null,
+      };
+      // 草稿 / 敏感话题：先决定，生成后不调用发送层，直接进待确认队列。
+      const sensitive = selfModel.sensitiveHit(this.config, clean.text);
+      const reason = sensitive ? 'sensitive' : onDuty.mode === 'draft' ? 'draft' : '';
+      if (reason) msg.onDutyDraft = { reason };
     }
     // 保留原有旁听记录，但在提醒、命令和固定回复之前拦住会话。
     if (denial) return { action: 'ignore', reason: denial, key, msg };
@@ -590,6 +729,7 @@ class Bot {
       profile = { uid: msg.senderId, name: msg.senderName, nickname: '', notes: [], count: 0 };
     }
     // 群里用微信昵称区分说话人，避免用户改 profile.nickname 造成冒名；私聊仍沿用自报昵称。
+    if (msg.onDuty) msg.onDuty.overrides = this.onDutyOverrides(msg.onDuty.policy, profile);
     const displayName = isGroup
       ? (msg.senderName || profile.nickname || '')
       : (profile.nickname || msg.senderName || '');
@@ -670,20 +810,12 @@ class Bot {
 
     // 4) 群聊里没被叫到就先不说话
     // （triggerResult 以前叫 trigger，把模块导入 trigger 遮蔽了（L12），改个名）
-    const pluginInput = this.pluginContext({ key, msg });
-    await this.messagePlugins.run('chat.received', pluginInput);
-    const pluginTrigger = await this.messagePlugins.run('chat.pre_reply', pluginInput);
-    if (pluginTrigger.action === 'skip') return { action: 'ignore', reason: 'plugin_skip', key, msg, atMe };
-    // 普通回复的状态变更先作为计划，最终闸门和后置插件拒绝时不写回。
+    // 普通回复的状态变更先作为计划，最终闸门拒绝时不写回。
     turn.state = state;
     const staged = replyDecision.draftReplyState(state);
     turn.before = staged.before;
     turn.draft = state = staged.draft;
     const triggerResult = this.computeTrigger({ msg, atMe, clean, isGroup, state, nowMs, isMaster, muted });
-    if (pluginTrigger.action === 'wake' && !['silent', 'minute_cap', 'no_text'].includes(triggerResult.reason)) {
-      triggerResult.wake = true;
-      triggerResult.reason = 'plugin';
-    }
     // 群里被人骂了但没 @：只有「骂的是她」才唤醒她反击。
     // 以前这里只看「文本带脏字」+「她刚说过话/在接话窗口」就唤醒 —— 于是群里任何人
     // 抱怨一句「这天气真垃圾」「股票跌了滚蛋吧」，她都会跳出来，还绕过静默期。
@@ -804,20 +936,13 @@ class Bot {
     const linkUrls = (this.config.links && this.config.links.enabled === false)
       ? [] : links.extractUrls(clean.text || '');
     const linkTask = linkUrls.length ? this.readLink(linkUrls[0], key) : Promise.resolve('');
-    const pluginSearch = this.messagePlugins.supports?.('chat.search')
-      ? await this.messagePlugins.run('chat.search', this.pluginContext({ key, msg })) : null;
-    let searchResult = pluginSearch?.search || await searchService.search({
+    const searchResult = await searchService.search({
       text: clean.text,
       history: () => this.recentHeard({ msg, key }).filter(line => line !== clean.text),
       llm: this.llm, config: this.config.websearch || {}, dataDir: this.config.paths?.dataDir || 'data',
       now: this.now(), timeZone: time.resolveTimeZone(this.config),
       trace: (stage, data) => this.logger?.info('[search] stage=' + stage + ' ' + JSON.stringify(data)),
     });
-    if (this.messagePlugins.supports?.('chat.search_result')) {
-      const transformed = await this.messagePlugins.run('chat.search_result',
-        this.pluginContext({ key, msg }, { search: searchResult }));
-      searchResult = transformed.search || searchResult;
-    }
     if (searchResult.status !== 'skipped') {
       try {
         this.store.appendEvent(key, {
@@ -1026,7 +1151,27 @@ class Bot {
     if (this.moments && isMaster && !isGroup && momentsIntent(clean.text)) {
       try { momentsBlock = this.moments.contextBlock(); } catch { momentsBlock = ''; }
     }
-    const memoryBlock = [mem.block, mem.relationsBlock, momentsBlock].filter(Boolean).join('\n\n');
+    // 在岗动态尾部：与记忆块同一个位置（最后一条 user 消息），绝不进 system。
+    // 先过滤 private / 不可见项，再按相关度 + importance 排序，预算 900 token。
+    let selfBlock = '';
+    if (msg.onDuty && msg.onDuty.model) {
+      try {
+        const assets = selfModel.loadAssets(this.config);
+        selfBlock = selfModel.buildBlock(msg.onDuty.model, msg.onDuty.policy, {
+          query: clean.text,
+          budgetTokens: 900,
+          now: nowMs,
+          l2: this.l2Snapshot(profile),
+          assets,
+        });
+      } catch (err) {
+        this.logger?.warn?.('[self] 生成授权信息块失败，本轮只带记忆：' + describeError(err));
+      }
+    }
+    // 记忆块与自我模型块都必须带边界声明（契约 §6）。
+    const boundary = msg.onDuty ? selfModel.BOUNDARY : '';
+    const memoryBlock = [boundary, mem.block, mem.relationsBlock, momentsBlock, selfBlock]
+      .filter(Boolean).join('\n\n');
     const turns = this.buildTurns({ ...msg, ts: nowMs }, historyForTurns, memoryBlock, tail);
 
     // 预算：system 只测量，不裁剪；dialogueBudget 默认 5,500，给裁剪窗口用。
@@ -1122,32 +1267,6 @@ class Bot {
     return trigger.computeTrigger(this, args);
   }
 
-  pluginContext(decision, extra = {}) {
-    const msg = decision.msg || {};
-    let history = [];
-    try {
-      history = this.store.messages(decision.key, 12).map(m => ({ role: m.role, text: m.text, uid: m.uid,
-        targetId: m.replyToUserId, at: m.ts }));
-    } catch { /* 记忆不可读时沿用宿主只回当前消息的降级路径。 */ }
-    const last = history.filter(m => m.role === 'assistant').at(-1);
-    return { key: decision.key, now: this.now().getTime(),
-      message: { platform: msg.platform, chatId: msg.chatId, chatType: msg.chatType,
-        senderId: msg.senderId, text: msg.text, atMe: Boolean(msg.atMe), replyToBot: Boolean(msg.replyToBot),
-        mentionedNames: msg.mentionedNames || [] }, history, lastBot: last,
-      search: msg.searchResult, webText: msg.webText || '', ...extra };
-  }
-
-  async transformPluginReply(decision, text) {
-    if (!this.activateReply(decision)) return '';
-    this.checkReplyLength(String(text || '').length);
-    const output = await this.messagePlugins.run('chat.reply', this.pluginContext(decision, { text }));
-    if (!this.activateReply(decision)) return '';
-    this.checkReplyLength(String(output.text || '').length);
-    const beforeSend = await this.messagePlugins.run('chat.before_send', this.pluginContext(decision, { text: output.text }));
-    this.checkReplyLength(String(beforeSend.text || '').length);
-    return beforeSend.text;
-  }
-
   checkReplyLength(length) {
     if (length > MAX_REPLY_BUFFER_CHARS) throw new LlmError('回复太长了，换个说法再试试', { code: 'reply_too_long' });
   }
@@ -1194,8 +1313,10 @@ class Bot {
     if (!decision || !decision.key) return { action: 'ignore', text: '', bubbles: [], reason: 'empty_reply' };
     const previous = this._finalReplies.get(decision);
     if (previous) return previous;
+    const draft = Boolean(decision.msg && decision.msg.onDuty && decision.msg.onDutyDraft);
     let bubbles = [];
-    if (this.activateReply(decision)) bubbles = this._finalizeOnce(decision, text, options);
+    if (draft) bubbles = this._finalizeOnce(decision, text, options);
+    else if (this.activateReply(decision)) bubbles = this._finalizeOnce(decision, text, options);
     const turn = this._replyTurns.get(decision);
     if (bubbles.length) {
       this._replyQuota.commit(turn?.lease, decision.key);
@@ -1203,8 +1324,11 @@ class Bot {
     } else this.releaseReply(decision);
     const result = Object.freeze({ action: bubbles.length ? 'reply' : 'ignore',
       text: bubbles.length ? String(decision.finalText || '') : '', bubbles: Object.freeze([...bubbles]),
-      reason: options.error ? 'llm_error' : bubbles.length ? decision.reason : decision.action === 'ignore' ? decision.reason : 'empty_reply',
+      reason: options.error ? 'llm_error' : decision.pendingId ? 'on_duty_draft'
+        : bubbles.length ? decision.reason : decision.action === 'ignore' ? decision.reason : 'empty_reply',
       mock: Boolean(decision.mock), ...(options.error ? { error: true } : {}),
+      ...(decision.pendingId ? { pendingId: decision.pendingId, draft: true } : {}),
+      ...(decision.assetJob ? { assetJob: decision.assetJob } : {}),
       ...(decision.stickerCategory ? { stickerCategory: decision.stickerCategory } : {}),
       ...(decision.separateText ? { separateText: true } : {}) });
     this._finalReplies.set(decision, result);
@@ -1590,7 +1714,8 @@ class Bot {
    * 流式生成回复文本片段（含演示模式）。
    */
   async *generate(decision, { signal } = {}) {
-    if (!this.activateReply(decision) || signal?.aborted) { this.releaseReply(decision); return; }
+    const draftTurn = Boolean(decision.msg && decision.msg.onDutyDraft);
+    if ((!draftTurn && !this.activateReply(decision)) || signal?.aborted) { this.releaseReply(decision); return; }
     try {
     if (decision.action === 'command') {
       yield decision.text;
@@ -1660,6 +1785,8 @@ class Bot {
    * @returns {{emotion: string, path: string}|null}
    */
   stickerFor(decision, text) {
+    // 资产优先：一条回复最多一个附件。队列任务本身就是桥接要的 sticker 结构。
+    if (decision && decision.assetJob) return decision.assetJob;
     if (!stickers.isOn(this.config) || !this.stickerService) return null;
     if (decision && decision.error) {
       this.logger?.info('[sticker] stage=decision result=skip reason=reply_error');
@@ -1810,6 +1937,19 @@ class Bot {
     const stickerMark = stripStickerMarks(text);
     if (stickerMark.category && decision) decision.stickerCategory = stickerMark.category;
     text = stickerMark.text;
+    // 资产标记只在在岗模式解析：[[asset:id]] 或 [[asset:标题/关键词]]。
+    // 标记必须从用户可见文本里剥掉；权限不通过在解析阶段就拒绝。
+    const onDuty = decision && decision.msg && decision.msg.onDuty;
+    let assetCandidate = null;
+    if (onDuty && !error) {
+      const assetMark = selfModel.parseAssetMarks(text);
+      text = assetMark.text;
+      if (assetMark.marker) {
+        const resolved = selfModel.resolveAsset(this.config, assetMark.marker, onDuty.policy);
+        if (resolved.ok) assetCandidate = resolved;
+        else this.noteAssetDenied(decision, resolved.reason);
+      }
+    }
     // 正文里的 emoji 剥出来，单独发一条
     const emojiRe = /[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}\u{1F1E6}-\u{1F1FF}\u{FE0F}]/gu;
     const foundEmoji = (text.match(emojiRe) || []).join('');
@@ -1918,6 +2058,40 @@ class Bot {
         this.logger && this.logger.warn('主人让互怼，但语气不对，换掉：' + textMeta(text));
         text = pickRoast();
         decision.finalText = text;
+      }
+    }
+    // 在岗草稿：不写助手记忆、不返回气泡（网关据此不调用发送层），只进待确认队列。
+    // 敏感话题即使对象策略是 auto 也强制走这里（契约 §4.3）。
+    if (onDuty && msg.onDutyDraft) {
+      try {
+        const pending = selfModel.addPending(this.config, {
+          key: decision.key,
+          uid: onDuty.policy.uid || onDuty.objectId || '',
+          name: msg.chatTitle || msg.senderName || onDuty.policy.uid || '',
+          text,
+          reason: msg.onDutyDraft.reason,
+          assets: assetCandidate ? [assetCandidate.asset] : [],
+        });
+        decision.pendingId = pending.id;
+        decision.finalText = text;
+        this.logger?.info(`[self] stage=draft result=queued reason=${msg.onDutyDraft.reason} len=${Array.from(text).length}`);
+      } catch (err) {
+        this.logger?.warn?.('[self] 待确认队列写入失败：' + describeError(err));
+      }
+      return [];
+    }
+    // 资产通过校验：入现有附件队列（一条回复最多一个）。发送/失败回执由桥接沿用原链路。
+    if (onDuty && assetCandidate) {
+      const job = this.queueAssetJob(decision, assetCandidate);
+      if (job) {
+        decision.assetJob = job;
+        try {
+          this.store.appendEvent(decision.key, {
+            type: 'asset',
+            detail: assetCandidate.asset.title,
+            status: 'queued',
+          });
+        } catch { /* 记账失败不影响发送 */ }
       }
     }
     // 写库失败照常返回 bubbles：话已经生成了，不能因为落库失败把回复丢了。
@@ -2089,7 +2263,8 @@ class Bot {
       try { this.store.checkpoint(decision.key); } catch { /* 忽略的消息也要留断点 */ }
       return { action: 'ignore', reason: decision.reason };
     }
-    if (!this.activateReply(decision)) return { action: 'ignore', reason: decision.reason };
+    const draftTurn = Boolean(decision.msg && decision.msg.onDutyDraft);
+    if (!draftTurn && !this.activateReply(decision)) return { action: 'ignore', reason: decision.reason };
     if (decision.action === 'command') {
       const result = this.finalizeReply(decision, decision.text);
       return { action: result.action, reply: result.text, bubbles: [...result.bubbles], reason: 'command', commandType: decision.commandType };
@@ -2199,10 +2374,10 @@ class Bot {
     text = String(text == null ? '' : text).trim();
     this.recordUsage(decision, this.usageSince(usageMark));
     try {
-      text = await this.transformPluginReply(decision, text);
+      this.checkReplyLength(text.length);
     } catch (err) {
       if (signal?.aborted) return { action: 'ignore', reason: 'cancelled' };
-      this.logger?.error('回复插件失败：' + describeError(err));
+      this.logger?.error('回复太长：' + describeError(err));
       const result = this.finalizeReply(decision, this.failureReplyText(err), { error: true });
       return { action: result.action, reply: result.text, bubbles: [...result.bubbles], reason: result.reason, error: true };
     }
@@ -2222,6 +2397,8 @@ class Bot {
       reason: decision.reason,
       mock: decision.mock,
       ...(decision.separateText ? { separateText: true } : {}),
+      // 资产队列：网关把它当成 sticker 字段交给桥接（沿用现有附件通道）。
+      ...(decision.assetJob ? { assetJob: decision.assetJob } : {}),
       // 表情包分类由模型写在正文里的标记决定，这里带出去给网关排队
       ...(decision.stickerCategory ? { stickerCategory: decision.stickerCategory } : {}),
       // 这一轮是否命中“提醒带一张”；网关用它决定 ensureSend 要不要补图

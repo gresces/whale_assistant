@@ -10,8 +10,8 @@ function fixture(t,kind='ordinary'){
  const root=fs.mkdtempSync(path.join(os.tmpdir(),'whale-t09-uncertain-'));t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
  const clock={now:NOW},config={paths:{dataDir:root},env:{timezone:'UTC'},reminder:{enabled:true,maxPerDay:1},server:{allowRemote:false},gateway:{wechat:{inboundToken:TOKEN}}};
  const logs=[],logger={info:v=>logs.push(v),warn:v=>logs.push(v),error:v=>logs.push(v),debug(){}};
- const make=()=>new ReminderService(config,{now:()=>clock.now,logger}),svc=make();svc.pluginAllowed=()=>true;
- const item=kind==='ordinary'?svc.add({wxid:'fixture-round2',text:'Synthetic reminder body',at:NOW+1000}):svc.enqueueNow({wxid:'fixture-round2',text:'Synthetic private body',kind,pluginId:'synthetic-plugin',pluginHash:'synthetic-hash'});
+ const make=()=>new ReminderService(config,{now:()=>clock.now,logger}),svc=make();
+ const item=kind==='ordinary'?svc.add({wxid:'fixture-round2',text:'Synthetic reminder body',at:NOW+1000}):svc.enqueueNow({wxid:'fixture-round2',text:'Synthetic private body',kind});
  clock.now+=1000;assert.equal(svc.due()[0].id,item.id);
  return {root,clock,config,logs,logger,make,svc,item};
 }

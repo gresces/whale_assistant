@@ -3,9 +3,11 @@ using System.Collections.Generic;
 using System.IO;
 using System.Text.Json;
 using System.Windows;
+using System.Windows.Interop;
 using System.Windows.Media;
 using System.Windows.Media.Effects;
 using System.Windows.Media.Imaging;
+using Microsoft.Win32;
 
 namespace WhaleLauncher
 {
@@ -18,9 +20,37 @@ namespace WhaleLauncher
         private static readonly string SettingsPath =
             Path.Combine(AppContext.BaseDirectory, "data", "launcher-ui.json");
 
-        public static string Theme { get; private set; } = "dark";
+        public static string Theme { get; private set; } = "system";
         public static string Backdrop { get; private set; } = "";
-        public static bool IsDark => !string.Equals(Theme, "light", StringComparison.OrdinalIgnoreCase);
+        public static bool IsSystem => string.Equals(Theme, "system", StringComparison.OrdinalIgnoreCase);
+
+        /// <summary>
+        /// 实际用于配色的主题。跟随系统时要读 Windows 的 AppsUseLightTheme：
+        /// 读不到就按浅色（Windows 默认），和顶栏按钮显示的「跟随系统」一致。
+        /// </summary>
+        public static string EffectiveTheme
+        {
+            get
+            {
+                if (!IsSystem) return Theme;
+                return SystemPrefersLight() ? "light" : "dark";
+            }
+        }
+
+        public static bool IsDark => string.Equals(EffectiveTheme, "dark", StringComparison.OrdinalIgnoreCase);
+
+        public static string ThemeLabel => Theme switch
+        {
+            "light" => "浅色",
+            "dark" => "深色",
+            _ => "跟随系统",
+        };
+
+        /// <summary>给状态摘要 / 顶栏提示用；跟随系统时把当前解析结果一起说出来。</summary>
+        public static string ThemeDescription => IsSystem
+            ? "跟随系统 · 当前" + (IsDark ? "深色" : "浅色")
+            : ThemeLabel;
+
         public static bool HasBackdrop => !string.IsNullOrWhiteSpace(Backdrop) && File.Exists(Backdrop);
 
         /// <summary>背景图模糊半径（0–60），直接喂给 BlurEffect。</summary>
@@ -73,6 +103,7 @@ namespace WhaleLauncher
         private static Color _darkHalo;
         private static bool _paletteReady;
 
+        // Fluent 2 语义色：浅色品牌 #0F6CBD，深色品牌 #115EA3；正文/次要文字按中性角色取值。
         private static readonly Dictionary<string, string> Light = new Dictionary<string, string>
         {
             ["Bg"] = "#FFF3F3F3",
@@ -82,31 +113,31 @@ namespace WhaleLauncher
             ["BgFoot"] = "#FFF9F9F9",
             ["BgContent"] = "#00F3F3F3",
             ["CardBg"] = "#FFFFFFFF",
-            ["CardBorder"] = "#FFE1E1E1",
-            ["Line"] = "#FFE1E1E1",
-            ["LineSoft"] = "#FFEAEAEA",
-            ["Text"] = "#FF1A1A1A",
+            ["CardBorder"] = "#FFE0E0E0",
+            ["Line"] = "#FFE0E0E0",
+            ["LineSoft"] = "#FFEBEBEB",
+            ["Text"] = "#FF242424",
             ["Text2"] = "#FF424242",
-            ["Muted"] = "#FF5C5C5C",
-            ["Dim"] = "#FF6E6E6E",
-            ["Accent"] = "#FF0F6E72",
-            ["AccentDim"] = "#FFE3EDED",
-            ["AccentSoft"] = "#FFDCE9E9",
+            ["Muted"] = "#FF616161",
+            ["Dim"] = "#FF6B6B6B",
+            ["Accent"] = "#FF0F6CBD",
+            ["AccentDim"] = "#FFEBF3FC",
+            ["AccentSoft"] = "#FFDCEBF9",
             ["Ok"] = "#FF107C41",
             ["Warn"] = "#FF9D5D00",
             ["Bad"] = "#FFC42B1C",
             ["Idle"] = "#FF9A9A9A",
-            ["PrimaryBg"] = "#FF0F6E72",
+            ["PrimaryBg"] = "#FF0F6CBD",
             ["PrimaryFg"] = "#FFFFFFFF",
-            ["PrimaryHover"] = "#FF0C5C5F",
+            ["PrimaryHover"] = "#FF115EA3",
             ["GhostBg"] = "#FFFFFFFF",
             ["GhostHover"] = "#FFF5F5F5",
             ["Hover"] = "#FFEDEDED",
             ["FieldBg"] = "#FFFFFFFF",
-            ["FieldBorder"] = "#FFD1D1D1",
+            ["FieldBorder"] = "#FF757575",
             ["PopupBg"] = "#FFFFFFFF",
             ["ChipBg"] = "#FFF7F7F7",
-            ["Surface3"] = "#FFE8E8E8",
+            ["Surface3"] = "#FFE9E9E9",
             ["TopBtnHover"] = "#FFE8E8E8",
             ["ScrollThumb"] = "#FFBDBDBD",
             ["BackdropTint"] = "#F0F3F3F3",
@@ -114,41 +145,41 @@ namespace WhaleLauncher
 
         private static readonly Dictionary<string, string> Dark = new Dictionary<string, string>
         {
-            ["Bg"] = "#FF202020",
-            ["BgDeep"] = "#FF1A1A1A",
+            ["Bg"] = "#FF1F1F1F",
+            ["BgDeep"] = "#FF141414",
             ["BgNav"] = "#FF272727",
             ["BgTop"] = "#FF272727",
             ["BgFoot"] = "#FF272727",
-            ["BgContent"] = "#00202020",
-            ["CardBg"] = "#FF2B2B2B",
-            ["CardBorder"] = "#FF3A3A3A",
-            ["Line"] = "#FF3A3A3A",
+            ["BgContent"] = "#001F1F1F",
+            ["CardBg"] = "#FF292929",
+            ["CardBorder"] = "#FF3D3D3D",
+            ["Line"] = "#FF3D3D3D",
             ["LineSoft"] = "#FF333333",
             ["Text"] = "#FFFFFFFF",
-            ["Text2"] = "#FFC5C5C5",
-            ["Muted"] = "#FF9A9A9A",
-            ["Dim"] = "#FF969696",
-            ["Accent"] = "#FF4CC2C4",
-            ["AccentDim"] = "#FF203838",
-            ["AccentSoft"] = "#FF2A3B3B",
+            ["Text2"] = "#FFD6D6D6",
+            ["Muted"] = "#FFADADAD",
+            ["Dim"] = "#FFADADAD",
+            ["Accent"] = "#FF479EF5",
+            ["AccentDim"] = "#FF082338",
+            ["AccentSoft"] = "#FF0B2E4A",
             ["Ok"] = "#FF6CCB7C",
             ["Warn"] = "#FFF2C94C",
             ["Bad"] = "#FFFF6B6B",
             ["Idle"] = "#FF8A8A8A",
-            ["PrimaryBg"] = "#FF4CC2C4",
-            ["PrimaryFg"] = "#FF102A2B",
-            ["PrimaryHover"] = "#FF5FD3D5",
+            ["PrimaryBg"] = "#FF115EA3",
+            ["PrimaryFg"] = "#FFFFFFFF",
+            ["PrimaryHover"] = "#FF0F6CBD",
             ["GhostBg"] = "#FF2D2D2D",
             ["GhostHover"] = "#FF383838",
             ["Hover"] = "#FF333333",
             ["FieldBg"] = "#FF2D2D2D",
-            ["FieldBorder"] = "#FF454545",
+            ["FieldBorder"] = "#FF9A9A9A",
             ["PopupBg"] = "#FF2C2C2C",
             ["ChipBg"] = "#FF2A2A2A",
             ["Surface3"] = "#FF333333",
             ["TopBtnHover"] = "#FF383838",
             ["ScrollThumb"] = "#FF5A5A5A",
-            ["BackdropTint"] = "#AD202020",
+            ["BackdropTint"] = "#AD1F1F1F",
         };
 
         public static void Load()
@@ -161,7 +192,7 @@ namespace WhaleLauncher
                 if (root.TryGetProperty("theme", out var t) && t.ValueKind == JsonValueKind.String)
                 {
                     var v = (t.GetString() ?? "").Trim().ToLowerInvariant();
-                    if (v == "light" || v == "dark") Theme = v;
+                    if (v == "light" || v == "dark" || v == "system") Theme = v;
                 }
                 if (root.TryGetProperty("backdrop", out var b) && b.ValueKind == JsonValueKind.String)
                     Backdrop = b.GetString() ?? "";
@@ -219,13 +250,86 @@ namespace WhaleLauncher
 
         public static bool SetTheme(string theme)
         {
-            var next = string.Equals(theme, "light", StringComparison.OrdinalIgnoreCase) ? "light" : "dark";
+            var next = string.Equals(theme, "light", StringComparison.OrdinalIgnoreCase) ? "light"
+                : string.Equals(theme, "system", StringComparison.OrdinalIgnoreCase) ? "system"
+                : "dark";
             if (next == Theme) return false;
             Theme = next;
             ApplyTheme();
             Save();
             Changed?.Invoke();
             return true;
+        }
+
+        /// <summary>顶栏按钮：浅色 → 深色 → 跟随系统 → 浅色。返回切换后的说明。</summary>
+        public static string CycleTheme()
+        {
+            var next = Theme switch
+            {
+                "light" => "dark",
+                "dark" => "system",
+                _ => "light",
+            };
+            SetTheme(next);
+            return ThemeDescription;
+        }
+
+        private static bool SystemPrefersLight()
+        {
+            try
+            {
+                using var key = Registry.CurrentUser.OpenSubKey(
+                    @"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize");
+                var value = key?.GetValue("AppsUseLightTheme");
+                if (value is int n) return n != 0;
+            }
+            catch { /* 注册表读不到：按 Windows 默认浅色 */ }
+            return true;
+        }
+
+        // 跟随系统时监听 Windows 设置变化：给窗口进程挂一个 message-only HwndSource。
+        // 没有 Application / 创建失败就安静放弃，下次启动仍会按注册表解析，绝不影响启动。
+        private static HwndSource _themeWatcher;
+        private static bool _themeWatcherFailed;
+        private static bool? _lastResolvedDark;
+
+        public static void StartSystemThemeWatch()
+        {
+            _lastResolvedDark ??= IsDark;
+            if (_themeWatcher != null || _themeWatcherFailed || Application.Current == null) return;
+            try
+            {
+                var parameters = new HwndSourceParameters("WhaleThemeWatcher")
+                {
+                    Width = 0,
+                    Height = 0,
+                    WindowStyle = 0,
+                };
+                parameters.ParentWindow = new IntPtr(-3);   // HWND_MESSAGE
+                _themeWatcher = new HwndSource(parameters);
+                _themeWatcher.AddHook(OnThemeMessage);
+            }
+            catch
+            {
+                // 没有窗口句柄 / 系统不支持 message-only 窗口时只放弃实时跟随，
+                // 主题仍会在启动时解析一次；不能让这个监听把启动器弄崩。
+                _themeWatcher = null;
+                _themeWatcherFailed = true;
+            }
+        }
+
+        private static IntPtr OnThemeMessage(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
+        {
+            const int WM_SETTINGCHANGE = 0x001A;
+            const int WM_THEMECHANGED = 0x031D;
+            if (msg != WM_SETTINGCHANGE && msg != WM_THEMECHANGED) return IntPtr.Zero;
+            if (!IsSystem) return IntPtr.Zero;
+            var now = IsDark;
+            if (_lastResolvedDark == now) return IntPtr.Zero;
+            _lastResolvedDark = now;
+            ApplyTheme();
+            Changed?.Invoke();
+            return IntPtr.Zero;
         }
 
         /// <summary>
@@ -235,6 +339,7 @@ namespace WhaleLauncher
         public static void ApplyTheme()
         {
             if (Application.Current == null) return;
+            if (IsSystem) _lastResolvedDark = IsDark;
             if (!_paletteReady) BuildPalettes();
 
             var colors = IsDark ? _darkPalette : _lightPalette;
@@ -286,13 +391,14 @@ namespace WhaleLauncher
             colors["AccentSoft"] = Blend(bg, accent, dark ? 0.16 : 0.12);
             colors["AccentDim"] = Blend(bg, accent, dark ? 0.10 : 0.07);
 
-            // 主按钮始终跟主题色走：亮青绿配深字、深青绿配白字，保证 4.5:1 以上。
-            // 用户改强调色后按钮一起变，不需要再到 XAML 里找第二份颜色。
+            // 主按钮用品牌填充色：浅色 #0F6CBD、深色 #115EA3；用户手选主题色时才跟随。
+            // 强调文字 / 链接仍用 Accent（深色下是更亮的 #479EF5），对比度更好。
+            var brand = string.IsNullOrEmpty(AccentOverride) ? colors["PrimaryBg"] : accent;
             var darkInk = Color.FromRgb(0x10, 0x24, 0x24);
-            var onAccent = Contrast(Colors.White, accent) >= Contrast(darkInk, accent) ? Colors.White : darkInk;
-            colors["PrimaryBg"] = accent;
-            colors["PrimaryFg"] = onAccent;
-            colors["PrimaryHover"] = dark ? Blend(accent, Colors.White, 0.12) : Blend(accent, Colors.Black, 0.14);
+            var onBrand = Contrast(Colors.White, brand) >= Contrast(darkInk, brand) ? Colors.White : darkInk;
+            colors["PrimaryBg"] = brand;
+            colors["PrimaryFg"] = onBrand;
+            colors["PrimaryHover"] = dark ? Blend(brand, Colors.White, 0.12) : Blend(brand, Colors.Black, 0.14);
 
             if (!HasBackdrop || !MonetEnabled) return;
 
