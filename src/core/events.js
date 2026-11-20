@@ -16,6 +16,7 @@ const time = require('../infra/time');
 /** 动作类型 → 说人话的名字 */
 const TYPE_LABEL = new Map([
   ['sticker', '表情包'],
+  ['asset', '可分享资产'],
   ['send', '文字发送'],
   ['link', '读取链接'],
   ['web', '联网查询'],
@@ -33,6 +34,7 @@ const STATUS_LABEL = new Map([
   ['blocked', '没有发出去（没配中转，也不是本地桥接）'],
   ['ok', '完成'],
   ['empty', '没有结果'],
+  ['denied', '被权限拒绝，没有发'],
 ]);
 
 const MAX_TYPE = 20;

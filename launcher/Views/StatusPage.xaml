@@ -18,10 +18,16 @@
             </Grid.ColumnDefinitions>
             <StackPanel>
                 <TextBlock Text="状态" Style="{StaticResource H1}" />
-                <TextBlock Text="内核、桥接、账号与本轮用量" Style="{StaticResource Small}" Margin="0,4,0,0" />
+                <TextBlock Text="内核、桥接、账号和模型状态。" Foreground="{DynamicResource Text2}"
+                           FontSize="14" LineHeight="20" Margin="0,4,0,0" />
             </StackPanel>
-            <Button Grid.Column="1" x:Name="BtnRefresh" Content="⟳ 刷新" Style="{StaticResource Ghost}"
-                    HorizontalAlignment="Right" VerticalAlignment="Center" Click="OnRefresh" />
+            <StackPanel Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center">
+                <Button x:Name="BtnRestart" Content="重启" Style="{StaticResource Ghost}" Margin="0,0,8,0"
+                        Click="OnRestart" AutomationProperties.Name="重启内核与桥接"
+                        ToolTip="先停内核与桥接，再按固定顺序重启" />
+                <Button x:Name="BtnRefresh" Content="刷新" Style="{StaticResource Ghost}"
+                        Click="OnRefresh" AutomationProperties.Name="刷新状态" />
+            </StackPanel>
         </Grid>
 
         <!-- 三卡 -->
@@ -118,9 +124,9 @@
                                     </Grid.ColumnDefinitions>
                                     <TextBlock Text="{Binding Time}" Style="{StaticResource Small}" VerticalAlignment="Center" />
                                     <TextBlock Grid.Column="1" Text="{Binding Who}" Foreground="{DynamicResource Muted}"
-                                               FontSize="12" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
+                                               FontSize="13" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
                                     <TextBlock Grid.Column="2" Text="{Binding Text}" Foreground="{DynamicResource Text}"
-                                               FontSize="12.5" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
+                                               FontSize="14" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
                                 </Grid>
                             </DataTemplate>
                         </ListBox.ItemTemplate>

@@ -11,9 +11,15 @@ import os
 import re
 import stat
 import time
+import zipfile
 
 MAX_BYTES = 64 * 1024 * 1024
+# 可分享资产有自己的上限：附件来自外层（分身素材），20 MiB 足够，
+# 但别再沿用表情包 64 MiB 的宽松值。
+FILE_MAX_BYTES = 20 * 1024 * 1024
 IMAGE_TYPES = {'.gif': 'GIF', '.png': 'PNG', '.jpg': 'JPEG', '.jpeg': 'JPEG', '.webp': 'WEBP'}
+DOCUMENT_TYPES = {'.pdf': 'PDF', '.docx': 'DOCX', '.xlsx': 'XLSX', '.txt': 'TXT'}
+ATTACHMENT_TYPES = dict(IMAGE_TYPES, **DOCUMENT_TYPES)
 MEDIA_TYPES = {'图片', '表情', '动画表情'}
 
 FILE_TYPES = {'文件', '文件/链接/卡片', '链接/卡片'}
@@ -87,6 +93,10 @@ class StickerImageError(ValueError):
     """A file rejection safe to display without revealing its path."""
 
 
+class AttachmentError(ValueError):
+    """A shareable-file rejection safe to display without revealing its path."""
+
+
 def _verify_image(path, expected):
     from PIL import Image
     try:
@@ -100,6 +110,137 @@ def _verify_image(path, expected):
         raise StickerImageError('图片像素过多，请缩小尺寸后再试。') from exc
     except (OSError, SyntaxError) as exc:
         raise StickerImageError('无法读取图片内容，请重新导出图片后再试。') from exc
+
+
+def _read_head(path, limit=65536):
+    with open(path, 'rb') as stream:
+        return stream.read(limit)
+
+
+def _text_looks_readable(sample):
+    """Reject binaries renamed to .txt without guessing a charset from nothing."""
+    if not sample:
+        return False
+    if sample.startswith((b'\xff\xfe', b'\xfe\xff')):
+        try:
+            text = sample.decode('utf-16')
+        except UnicodeDecodeError:
+            return False
+    else:
+        if b'\x00' in sample:
+            return False
+        for encoding in ('utf-8-sig', 'gb18030'):
+            try:
+                text = sample.decode(encoding)
+            except UnicodeDecodeError:
+                continue
+            break
+        else:
+            return False
+    return not any(ord(char) < 32 and char not in '\t\r\n\f' for char in text)
+
+
+def _sniff_zip_document(path, part, label):
+    try:
+        with zipfile.ZipFile(path) as archive:
+            names = archive.namelist()
+            if '[Content_Types].xml' not in names or not any(str(name).startswith(part) for name in names):
+                raise AttachmentError('%s 内容与扩展名不匹配。' % label)
+    except (zipfile.BadZipFile, OSError, RuntimeError) as exc:
+        raise AttachmentError('%s 内容与扩展名不匹配。' % label) from exc
+    return label
+
+
+def sniff_attachment(path, extension=None):
+    """Return a short content label; never echo the path in a rejection."""
+    extension = str(extension or os.path.splitext(os.fspath(path))[1] or '').lower()
+    if extension in IMAGE_TYPES:
+        _verify_image(path, IMAGE_TYPES[extension])
+        return 'IMAGE/' + IMAGE_TYPES[extension]
+    if extension == '.pdf':
+        if b'%PDF-' not in _read_head(path, 1024):
+            raise AttachmentError('PDF 内容与扩展名不匹配。')
+        return 'PDF'
+    if extension == '.docx':
+        return _sniff_zip_document(path, 'word/', 'DOCX')
+    if extension == '.xlsx':
+        return _sniff_zip_document(path, 'xl/', 'XLSX')
+    if extension == '.txt':
+        if not _text_looks_readable(_read_head(path)):
+            raise AttachmentError('TXT 内容看起来是二进制，已拒绝。')
+        return 'TXT'
+    raise AttachmentError('不支持的附件类型（仅支持 pdf/docx/xlsx/txt 和图片）。')
+
+
+def _reject_links(candidate, real_file):
+    """Reject symlinks/junctions on every component, like validate_path does."""
+    for start in {candidate, real_file}:
+        cursor = start
+        while True:
+            try:
+                info = os.lstat(cursor)
+            except OSError as exc:
+                raise AttachmentError('附件不存在或无法读取。') from exc
+            if (stat.S_ISLNK(info.st_mode)
+                    or getattr(info, 'st_file_attributes', 0) & 0x400):
+                raise AttachmentError('附件路径不能包含符号链接或重解析点。')
+            parent = os.path.dirname(cursor)
+            if parent == cursor:
+                break
+            cursor = parent
+
+
+def validate_attachment(path, root, max_bytes=FILE_MAX_BYTES, sniffer=None):
+    """Validate a shareable file: absolute, inside root, regular, bounded, sniffed.
+
+    The root is normally ``<repo>/data/share/files``. Returns the resolved path,
+    a change fingerprint, a short type label and the size. Rejections are
+    user-readable Chinese strings and never contain the supplied path, because
+    the job may originate in an untrusted webhook response.
+    """
+    try:
+        raw = os.fspath(path)
+    except TypeError as exc:
+        raise AttachmentError('附件路径无效。') from exc
+    if not isinstance(raw, str) or not raw.strip():
+        raise AttachmentError('附件路径无效。')
+    if not os.path.isabs(raw):
+        raise AttachmentError('附件必须使用绝对路径。')
+    if '..' in re.split(r'[\\/]+', raw):
+        raise AttachmentError('附件路径不能包含上级目录引用。')
+    root = os.path.abspath(os.fspath(root))
+    candidate = os.path.abspath(raw)
+    real_root, real_file = os.path.realpath(root), os.path.realpath(candidate)
+    try:
+        inside = os.path.commonpath([real_root, real_file]) == real_root
+    except ValueError:                     # 不同盘符：commonpath 直接抛
+        inside = False
+    if not inside or real_file == real_root:
+        raise AttachmentError('附件必须位于 data/share/files 目录内。')
+    _reject_links(candidate, real_file)
+    try:
+        info = os.stat(real_file)
+    except OSError as exc:
+        raise AttachmentError('附件不存在或无法读取。') from exc
+    if not stat.S_ISREG(info.st_mode):
+        raise AttachmentError('附件必须是普通文件。')
+    if info.st_size <= 0:
+        raise AttachmentError('附件是空文件。')
+    if info.st_size > max_bytes:
+        raise AttachmentError('附件超过 %d MiB 上限。' % (max_bytes // (1024 * 1024)))
+    extension = os.path.splitext(real_file)[1].lower()
+    if extension not in ATTACHMENT_TYPES:
+        raise AttachmentError('不支持的附件类型（仅支持 pdf/docx/xlsx/txt 和图片）。')
+    label = (sniffer or sniff_attachment)(real_file, extension)
+    try:
+        with open(real_file, 'rb') as stream:
+            digest = hashlib.sha256(stream.read(max_bytes + 1)).hexdigest()
+        after = os.stat(real_file)
+    except OSError as exc:
+        raise AttachmentError('附件不存在或无法读取。') from exc
+    if (info.st_size, info.st_mtime_ns, info.st_ino) != (after.st_size, after.st_mtime_ns, after.st_ino):
+        raise AttachmentError('附件在检查过程中发生了变化。')
+    return real_file, (after.st_size, after.st_mtime_ns, after.st_ino, digest), str(label), after.st_size
 
 
 def validate_path(path, root, image_check=None):
@@ -414,15 +555,38 @@ def quarantined_input_value(gui, hwnd, aliases):
 
 def guarded_send(gui, uia, hwnd, aliases, path, root, db, username, gate,
                  account_valid, activity_allowed, desktop=None, image_check=None,
+                 kind='image', max_bytes=None, sniffer=None,
                  sleep=time.sleep, confirm_timeout=5.0):
     """One paste and at most one Enter; the caller owns send_lock + gui_lock.
 
+    kind='image' keeps the historical sticker contract; kind='file' validates a
+    shareable attachment (absolute path under root, <= 20 MiB, sniffed type).
     gate must reread disk and backend generation. Returns structured evidence,
     never a truthy response object pretending that a failed operation succeeded.
     Cancellation after paste is *unconfirmed*, as a draft may remain. No global
     cleanup keys are sent into a possibly changed window; clear such drafts by
     hand before any future send.
     """
+    kind = 'file' if str(kind or '').strip().lower() == 'file' else 'image'
+    noun = 'attachment' if kind == 'file' else 'sticker'
+
+    def validate():
+        if kind == 'file':
+            injected = sniffer
+            if injected is None and image_check is not None:
+                def injected(real, extension):
+                    if extension in IMAGE_TYPES:
+                        image_check(real, IMAGE_TYPES[extension])
+                        return 'IMAGE/' + IMAGE_TYPES[extension]
+                    return sniff_attachment(real, extension)
+            return validate_attachment(path, root,
+                                       max_bytes=FILE_MAX_BYTES if max_bytes is None else max_bytes,
+                                       sniffer=injected)
+        approved_path, image_fingerprint = validate_path(path, root, image_check)
+        return (approved_path, image_fingerprint,
+                IMAGE_TYPES.get(os.path.splitext(approved_path)[1].lower(), ''),
+                os.stat(approved_path).st_size)
+
     touched = False
     attempted_enter = False
     draft_observed = False
@@ -430,11 +594,11 @@ def guarded_send(gui, uia, hwnd, aliases, path, root, db, username, gate,
         if not gate():
             return result('cancelled', 'stickers are disabled or generation expired')
         if not aliases or not hwnd or not account_valid() or not activity_allowed():
-            return result('failed', 'account or activity gate rejected the sticker')
+            return result('failed', 'account or activity gate rejected the %s' % noun)
         desktop = desktop or WindowsDesktop()
         identity = db_identity(db)
         baseline = watermark(db, username)
-        approved, fingerprint = validate_path(path, root, image_check)
+        approved, fingerprint, _media_type, _media_size = validate()
 
         def guard(*, require_focus=True):
             # Potentially blocking HTTP/DB work precedes immediate window/title/focus reads.
@@ -508,8 +672,8 @@ def guarded_send(gui, uia, hwnd, aliases, path, root, db, username, gate,
         else:
             return result('failed', 'input contains a draft; clear it manually before sending')
         # Validation can take time. Repeat guards before changing the clipboard/pasting.
-        if validate_path(approved, root, image_check)[1] != fingerprint:
-            return result('failed', 'sticker file changed before paste')
+        if validate()[1] != fingerprint:
+            return result('failed', '%s file changed before paste' % noun)
         # 后台文字发送可能留下焦点在会话列表。只给已核验的空输入框设置一次焦点，
         # 并重新读取账号、会话、控件和真实键盘焦点，再允许粘贴。
         control = guard(require_focus=False)
@@ -548,10 +712,11 @@ def guarded_send(gui, uia, hwnd, aliases, path, root, db, username, gate,
                           draft_may_remain=True, draft_observed=draft_observed)
         _post = desktop.value(control)
         if not _is_attachment(_post):
-            # 带上实际读到的值，才能判断是「微信把附件又转成文字」还是「读不到」
+            # 图片沿用现场排障需要的 40 字证据；附件不回显输入框内容。
+            detail = '' if kind == 'file' else ' (input reads %r)' % (str(_post)[:40],)
             return result('unconfirmed',
-                          'send gates changed after paste (input reads %r); Enter not pressed; clear draft manually; do not retry'
-                          % (str(_post)[:40],),
+                          'send gates changed after paste%s; Enter not pressed; clear draft manually; do not retry'
+                          % detail,
                           draft_may_remain=True, draft_observed=draft_observed)
         attempted_enter = True
         gui._input.key(0x0D)  # exactly one Enter, never Ctrl+Enter or retry
@@ -565,6 +730,6 @@ def guarded_send(gui, uia, hwnd, aliases, path, root, db, username, gate,
         if touched or attempted_enter:
             return result('unconfirmed', 'attachment action is uncertain; a draft may remain; do not retry',
                           draft_may_remain=True, draft_observed=draft_observed)
-        if isinstance(exc, StickerImageError):
+        if isinstance(exc, (StickerImageError, AttachmentError)):
             return result('failed', str(exc))
-        return result('failed', 'sticker safety checks or transport are unavailable')
+        return result('failed', '%s safety checks or transport are unavailable' % noun)

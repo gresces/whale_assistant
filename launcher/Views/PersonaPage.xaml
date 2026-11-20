@@ -12,19 +12,19 @@
             <Setter Property="VerticalContentAlignment" Value="Center" />
         </Style>
     </UserControl.Resources>
-    <Grid Margin="28,24,32,20" KeyboardNavigation.TabNavigation="Continue">
+    <Grid x:Name="PageRoot" Margin="24,20,24,20" KeyboardNavigation.TabNavigation="Continue">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto" />
             <RowDefinition Height="*" />
             <RowDefinition Height="Auto" />
         </Grid.RowDefinitions>
-        <StackPanel Margin="0,0,0,16">
+        <StackPanel x:Name="PageHeader" Margin="0,0,0,16">
             <DockPanel LastChildFill="False">
                 <TextBlock Text="人设" Style="{StaticResource H1}" DockPanel.Dock="Left" />
                 <Button Content="重新读取" Style="{StaticResource Ghost}" Click="OnReload" DockPanel.Dock="Right" />
             </DockPanel>
-            <TextBlock Text="先设定内心，再选择表达。自动保存成功后，下一轮对话生效。"
-                       Style="{StaticResource Small}" TextWrapping="Wrap" Margin="0,6,0,0" />
+            <TextBlock Text="人设和回复风格会自动保存。" Foreground="{DynamicResource Text2}"
+                       FontSize="14" LineHeight="20" Margin="0,4,0,0" />
         </StackPanel>
         <ScrollViewer x:Name="Body" Grid.Row="1" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
             <StackPanel Margin="0,0,12,0" MaxWidth="1100" HorizontalAlignment="Stretch">
@@ -54,25 +54,28 @@
                         <WrapPanel Margin="0,10,0,0">
                             <Button Content="应用选中预设" Style="{StaticResource Ghost}" Click="OnImportPreset" Margin="0,0,8,8" />
                             <Button x:Name="BtnSavePreset" Content="创建自定义人设" Style="{StaticResource Ghost}" Click="OnSavePreset" Margin="0,0,8,8" />
-                            <Button Content="打包分享" Style="{StaticResource Ghost}" Click="OnExportPersona" Margin="0,0,8,8" />
-                            <Button Content="仅分享提示词" Style="{StaticResource Ghost}" Click="OnExportPrompt" Margin="0,0,8,8" />
-                            <Button x:Name="BtnUpdatePreset" Content="更新此预设" Style="{StaticResource Ghost}" Click="OnUpdatePreset" Margin="0,0,8,8" />
-                            <Button x:Name="BtnResetMarket" Content="恢复作者版本" Style="{StaticResource Ghost}" Click="OnResetMarket" Margin="0,0,8,8" />
-                            <Button x:Name="BtnRenamePreset" Content="重命名" Style="{StaticResource Ghost}" Click="OnRenamePreset" Margin="0,0,8,8" />
-                            <Button x:Name="BtnDeletePreset" Content="删除预设" Style="{StaticResource Ghost}" Click="OnDeletePreset" Margin="0,0,8,8" />
                             <TextBlock x:Name="PresetSaved" Style="{StaticResource Small}" VerticalAlignment="Center" />
                         </WrapPanel>
+                        <Expander Header="预设管理" IsExpanded="False" Foreground="{DynamicResource Text}" Margin="0,4,0,0">
+                            <WrapPanel Margin="0,8,0,0">
+                                <Button Content="从文件导入…" Style="{StaticResource Ghost}" Click="OnImportPersonaFile" Margin="0,0,8,8" />
+                                <Button Content="打包分享" Style="{StaticResource Ghost}" Click="OnExportPersona" Margin="0,0,8,8" />
+                                <Button Content="仅分享提示词" Style="{StaticResource Ghost}" Click="OnExportPrompt" Margin="0,0,8,8" />
+                                <Button x:Name="BtnUpdatePreset" Content="更新此预设" Style="{StaticResource Ghost}" Click="OnUpdatePreset" Margin="0,0,8,8" />
+                                <Button x:Name="BtnRenamePreset" Content="重命名" Style="{StaticResource Ghost}" Click="OnRenamePreset" Margin="0,0,8,8" />
+                                <Button x:Name="BtnDeletePreset" Content="删除预设" Style="{StaticResource Ghost}" Click="OnDeletePreset" Margin="0,0,8,8" />
+                            </WrapPanel>
+                        </Expander>
                         <Border BorderBrush="{DynamicResource Line}" BorderThickness="0,1,0,0" Margin="0,8,0,16" />
                         <TextBlock Text="内在性格" Style="{StaticResource H2}" />
-                        <TextBlock Text="这些基础字段定义这个角色是谁。自定义内容用于补充，冲突时以当前基础字段为准。" Style="{StaticResource Small}" TextWrapping="Wrap" Margin="0,6,0,12" />
-                        <Grid>
+                        <Grid Margin="0,12,0,0">
                             <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="110" /></Grid.ColumnDefinitions>
                             <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="Auto" /></Grid.RowDefinitions>
                             <Grid Margin="0,0,12,0">
                                 <Grid.ColumnDefinitions><ColumnDefinition Width="Auto" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
                                 <Label Content="名字" Target="{Binding ElementName=TxtName}" />
-                                <TextBlock Grid.Column="1" Text="请务必与当前登录微信账号的昵称保持一致，避免群聊中因名称识别不一致而漏回消息。"
-                                           Style="{StaticResource Small}" Foreground="{DynamicResource Bad}" TextWrapping="Wrap"
+                                <TextBlock Grid.Column="1" Text="请与当前微信昵称一致。" Foreground="{DynamicResource Bad}"
+                                           FontSize="12" LineHeight="16" TextWrapping="Wrap"
                                            VerticalAlignment="Center" Margin="10,0,0,0" />
                             </Grid>
                             <TextBox Grid.Row="1" x:Name="TxtName" Margin="0,0,12,0" LostFocus="OnFieldLostFocus" AutomationProperties.Name="名字" />
@@ -106,12 +109,13 @@
                             <TextBlock Text="对话风格学习" Style="{StaticResource H2}" DockPanel.Dock="Left" />
                             <Border DockPanel.Dock="Right" Background="{DynamicResource Surface3}" CornerRadius="6"
                                     Padding="7,2" VerticalAlignment="Center">
-                                <TextBlock Text="默认本机" FontSize="10" FontWeight="SemiBold"
+                                <TextBlock Text="默认本机" FontSize="12" FontWeight="SemiBold"
                                            Foreground="{DynamicResource Muted}" />
                             </Border>
                         </DockPanel>
-                        <TextBlock Text="从已有聊天里学习对方的句长、语气、标点和常聊话题。默认只在本机统计，可选让模型总结抽样消息。建议先在「身份关系」里配置主要联系人，分析会更准确。"
-                                   Style="{StaticResource Small}" TextWrapping="Wrap" Margin="0,6,0,12" />
+                        <TextBlock Text="从已有聊天里学习对方的句长、语气和常聊话题。"
+                                   Foreground="{DynamicResource Text2}" FontSize="14" LineHeight="20"
+                                   TextWrapping="Wrap" Margin="0,6,0,12" />
                         <Border Background="{DynamicResource BgDeep}" CornerRadius="8" Padding="12,9" Margin="0,0,0,14">
                             <DockPanel>
                                 <Ellipse x:Name="StyleDot" Width="7" Height="7" Fill="{DynamicResource Idle}"
@@ -132,19 +136,18 @@
                                     <ComboBoxItem Content="贴合对方习惯" Tag="adapt" />
                                     <ComboBoxItem Content="模仿对方表达" Tag="mimic" />
                                 </ComboBox>
-                                <TextBlock Text="贴合：沿用对方的节奏和用词；模仿：更接近对方的句式和口头禅。"
-                                           Style="{StaticResource Small}" TextWrapping="Wrap" Margin="0,6,0,0" />
                                 <CheckBox x:Name="ChkStyleUseLlm" Content="让模型总结抽样消息（会发给当前模型）"
                                           Margin="0,14,0,0" />
                                 <WrapPanel Margin="0,14,0,0">
                                     <Button x:Name="BtnStyleMemory" Content="从已有记忆学习" Style="{StaticResource Ghost}"
                                             Click="OnStyleLearnMemory" IsEnabled="False" Margin="0,0,8,8" />
                                     <Button x:Name="BtnStyleExport" Content="从微信导出文件学习…" Style="{StaticResource Ghost}"
-                                            Click="OnStyleLearnExport" IsEnabled="False" Margin="0,0,8,8" />
+                                            Click="OnStyleLearnExport" IsEnabled="False" Margin="0,0,8,8"
+                                            ToolTip="先运行 scripts/export-wechat-history.py 生成文件" />
                                     <Button x:Name="BtnStyleClear" Content="清除学习结果" Style="{StaticResource Ghost}"
                                             Click="OnStyleClear" IsEnabled="False" Margin="0,0,0,8" />
                                 </WrapPanel>
-                                <TextBlock Text="不会保存原始聊天正文；从导出文件学习前，需先用 python scripts/export-wechat-history.py 生成文件。"
+                                <TextBlock Text="只保存统计摘要，不保存聊天原文。"
                                            Style="{StaticResource Small}" TextWrapping="Wrap" Margin="0,2,0,0" />
                             </StackPanel>
                             <StackPanel Grid.Column="1">
@@ -160,24 +163,6 @@
                         </Grid>
                     </StackPanel>
                 </Border>
-                <Border x:Name="SecRelation" Style="{StaticResource Card}" Padding="20" Margin="0,0,0,16">
-                    <StackPanel>
-                        <TextBlock Text="身份关系" Style="{StaticResource H2}" />
-                        <TextBlock Text="称呼不等于权限。主要联系人按不可修改的账号 ID 认证，昵称或自称不能授予权限。" Style="{StaticResource Small}" TextWrapping="Wrap" Margin="0,6,0,12" />
-                        <Label Content="角色怎么称呼你" Target="{Binding ElementName=TxtOwner}" />
-                        <TextBox x:Name="TxtOwner" LostFocus="OnFieldLostFocus" AutomationProperties.Name="对主要联系人的称呼" />
-                        <Label Content="主要联系人账号" Target="{Binding ElementName=TxtMasterSearch}" Margin="0,10,0,0" />
-                        <WrapPanel x:Name="MasterChips" />
-                        <TextBox x:Name="TxtMasterSearch" Margin="0,6,0,0" TextChanged="OnMasterSearchChanged" AutomationProperties.Name="搜索主要联系人" />
-                        <TextBlock x:Name="MasterHint" Text="搜索名字、备注或账号 ID，选择匹配联系人。" Style="{StaticResource Small}" TextWrapping="Wrap" Margin="0,6,0,0" />
-                        <TextBlock x:Name="MasterWarn" Style="{StaticResource Small}" TextWrapping="Wrap" Foreground="{DynamicResource Warn}" Visibility="Collapsed" Margin="0,6,0,0" />
-                        <ListBox x:Name="MasterSuggest" MaxHeight="170" Margin="0,6,0,0" Visibility="Collapsed" SelectionChanged="OnMasterSuggestionPicked" ScrollViewer.HorizontalScrollBarVisibility="Disabled" AutomationProperties.Name="匹配的主要联系人">
-                            <ListBox.ItemTemplate><DataTemplate><StackPanel Margin="2,3"><TextBlock Text="{Binding Display}" /><TextBlock Text="{Binding Sub}" Style="{StaticResource Small}" /></StackPanel></DataTemplate></ListBox.ItemTemplate>
-                        </ListBox>
-                        <Label Content="角色的别名 / 外号（一行一个）" Target="{Binding ElementName=TxtAliases}" Margin="0,10,0,0" />
-                        <TextBox x:Name="TxtAliases" MinHeight="60" TextWrapping="Wrap" AcceptsReturn="True" VerticalScrollBarVisibility="Auto" LostFocus="OnFieldLostFocus" AutomationProperties.Name="角色别名，一行一个" />
-                    </StackPanel>
-                </Border>
                 <Border x:Name="SecExpression" Style="{StaticResource Card}" Padding="20" Margin="0,0,0,16">
                     <StackPanel>
                         <TextBlock Text="表达偏好" Style="{StaticResource H2}" />
@@ -189,19 +174,39 @@
                             <StackPanel Margin="0,0,12,0"><Label Content="私聊字数上限" Target="{Binding ElementName=TxtPrivate}" /><ui:NumberField x:Name="TxtPrivate" Minimum="40" Maximum="800" Fallback="100" Label="私聊字数上限" LostFocus="OnFieldLostFocus" /><TextBlock x:Name="HintPrivate" Style="{StaticResource Small}" TextWrapping="Wrap" Margin="0,6,0,0" /></StackPanel>
                             <StackPanel Grid.Column="1"><Label Content="群聊字数上限" Target="{Binding ElementName=TxtGroup}" /><ui:NumberField x:Name="TxtGroup" Minimum="20" Maximum="300" Fallback="70" Label="群聊字数上限" LostFocus="OnFieldLostFocus" /><TextBlock x:Name="HintGroup" Style="{StaticResource Small}" TextWrapping="Wrap" Margin="0,6,0,0" /></StackPanel>
                         </Grid>
-                        <TextBlock Text="私聊和群聊分别使用上面的字数上限。旧版认真讨论还有独立上限。" Style="{StaticResource Small}" TextWrapping="Wrap" Margin="0,6,0,12" />
-                        <Label Content="颜文字用量" Target="{Binding ElementName=SldEmoji}" />
+                        <Label Content="颜文字用量" Target="{Binding ElementName=SldEmoji}" Margin="0,12,0,0" />
                         <Slider x:Name="SldEmoji" Minimum="0" Maximum="100" TickFrequency="1" IsSnapToTickEnabled="True" ValueChanged="OnEmojiChanged" AutomationProperties.Name="颜文字用量百分比" />
                         <TextBlock x:Name="HintEmoji" Style="{StaticResource Small}" Margin="0,6,0,12" />
                         <Label Content="最多分几条消息" Target="{Binding ElementName=TxtBubbles}" />
                         <ui:NumberField x:Name="TxtBubbles" Minimum="1" Maximum="8" Fallback="2" Label="最多分几条消息" LostFocus="OnFieldLostFocus" />
-                        <TextBlock Text="仅在长回复或请求分开发送时拆分，短回复保持一条。" Style="{StaticResource Small}" TextWrapping="Wrap" Margin="0,6,0,0" />
+                    </StackPanel>
+                </Border>
+                <Expander Header="身份关系与记忆（高级）" Foreground="{DynamicResource Text}" Margin="0,0,0,16">
+                    <StackPanel Margin="0,8,0,0">
+                <Border x:Name="SecRelation" Style="{StaticResource Card}" Padding="20" Margin="0,0,0,16">
+                    <StackPanel>
+                        <TextBlock Text="身份关系" Style="{StaticResource H2}" />
+                        <TextBlock Text="主要联系人按账号 ID 认证，昵称或自称不能授予权限。" Foreground="{DynamicResource Text2}"
+                                   FontSize="14" LineHeight="20" TextWrapping="Wrap" Margin="0,6,0,12" />
+                        <Label Content="角色怎么称呼你" Target="{Binding ElementName=TxtOwner}" />
+                        <TextBox x:Name="TxtOwner" LostFocus="OnFieldLostFocus" AutomationProperties.Name="对主要联系人的称呼" />
+                        <Label Content="主要联系人账号" Target="{Binding ElementName=TxtMasterSearch}" Margin="0,10,0,0" />
+                        <WrapPanel x:Name="MasterChips" />
+                        <TextBox x:Name="TxtMasterSearch" Margin="0,6,0,0" TextChanged="OnMasterSearchChanged" AutomationProperties.Name="搜索主要联系人" />
+                        <TextBlock x:Name="MasterHint" Text="搜索名字、备注或账号 ID。" Style="{StaticResource Small}" TextWrapping="Wrap" Margin="0,6,0,0" />
+                        <TextBlock x:Name="MasterWarn" Style="{StaticResource Small}" TextWrapping="Wrap" Foreground="{DynamicResource Warn}" Visibility="Collapsed" Margin="0,6,0,0" />
+                        <ListBox x:Name="MasterSuggest" MaxHeight="170" Margin="0,6,0,0" Visibility="Collapsed" SelectionChanged="OnMasterSuggestionPicked" ScrollViewer.HorizontalScrollBarVisibility="Disabled" AutomationProperties.Name="匹配的主要联系人">
+                            <ListBox.ItemTemplate><DataTemplate><StackPanel Margin="2,3"><TextBlock Text="{Binding Display}" /><TextBlock Text="{Binding Sub}" Style="{StaticResource Small}" /></StackPanel></DataTemplate></ListBox.ItemTemplate>
+                        </ListBox>
+                        <Label Content="角色的别名 / 外号（一行一个）" Target="{Binding ElementName=TxtAliases}" Margin="0,10,0,0" />
+                        <TextBox x:Name="TxtAliases" MinHeight="60" TextWrapping="Wrap" AcceptsReturn="True" VerticalScrollBarVisibility="Auto" LostFocus="OnFieldLostFocus" AutomationProperties.Name="角色别名，一行一个" />
                     </StackPanel>
                 </Border>
                 <Border x:Name="SecMemory" Style="{StaticResource Card}" Padding="20" Margin="0,0,0,16">
                     <StackPanel>
                         <TextBlock Text="上下文与记忆" Style="{StaticResource H2}" />
-                        <TextBlock Text="决定每轮带入多少历史，不改变人设。实际还受对话预算限制，越大通常越耗输入 token。" Style="{StaticResource Small}" TextWrapping="Wrap" Margin="0,6,0,12" />
+                        <TextBlock Text="每轮带入多少历史，不改变人设。" Foreground="{DynamicResource Text2}"
+                                   FontSize="14" LineHeight="20" TextWrapping="Wrap" Margin="0,6,0,12" />
                         <Grid>
                             <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
                             <StackPanel Margin="0,0,12,0"><Label Content="私聊历史条数" Target="{Binding ElementName=TxtTurns}" /><ui:NumberField x:Name="TxtTurns" Minimum="4" Maximum="400" Fallback="120" Label="私聊历史条数" LostFocus="OnFieldLostFocus" /></StackPanel>
@@ -209,7 +214,8 @@
                         </Grid>
                         <Expander Header="清空指定对话记忆" Foreground="{DynamicResource Text}" Margin="0,16,0,0">
                             <StackPanel Margin="0,8,0,0">
-                                <TextBlock Text="清除所选会话的内部历史、摘要和人物记忆；不删微信聊天记录、人设或其他会话。此操作无法直接撤销，请先确认已有备份。" Style="{StaticResource Small}" TextWrapping="Wrap" Margin="0,0,0,12" />
+                                <TextBlock Text="只清内部记忆，不删微信聊天记录；不可撤销。"
+                                           Style="{StaticResource Small}" TextWrapping="Wrap" Margin="0,0,0,12" />
                                 <ComboBox x:Name="CmbMemoryChat" DisplayMemberPath="Label" HorizontalAlignment="Stretch" AutomationProperties.Name="选择要清空记忆的会话" />
                                 <WrapPanel Margin="0,10,0,0"><Button x:Name="BtnRefreshMemory" Content="刷新对话列表" Style="{StaticResource Ghost}" Click="OnRefreshMemoryChats" Margin="0,0,8,8" /><Button x:Name="BtnResetMemory" Content="清空该对话记忆" Style="{StaticResource Ghost}" Click="OnResetChatMemory" IsEnabled="False" Margin="0,0,0,8" /></WrapPanel>
                                 <TextBlock x:Name="MemoryHint" Text="启动内核后可读取对话列表。" Style="{StaticResource Small}" TextWrapping="Wrap" />
@@ -217,7 +223,8 @@
                         </Expander>
                     </StackPanel>
                 </Border>
-                <TextBlock Text="联网与链接在「设置」管理；插件、表情包和主动发送在各自页面管理。实现与维护选项收纳到「设置 → 高级模式」，不再重复列在人设里。" Style="{StaticResource Small}" TextWrapping="Wrap" Margin="4,0,4,16" />
+                    </StackPanel>
+                </Expander>
             </StackPanel>
         </ScrollViewer>
         <TextBlock x:Name="SaveState" Grid.Row="2" Style="{StaticResource Small}" TextWrapping="Wrap" Margin="0,12,0,0" AutomationProperties.LiveSetting="Polite" />

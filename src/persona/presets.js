@@ -1,25 +1,20 @@
 'use strict';
 
 /**
- * 人设预设：内置（assets/personas/）、插件市场（data/plugins/*.persona.json）、
- * 用户自建（data/personas/*.json）三个来源。
+ * 人设预设：内置（assets/personas/）、用户自建（data/personas/*.json）两个来源。
  *
- * 内置和插件市场目录不直接删除：用户点删除时写进 data/personas/_hidden.json，
- * 只在列表里隐藏；插件卸载后重新安装会生成新文件（mtime/size 变了），
- * 自动解除隐藏，避免「重装插件后预设永远回不来」。
+ * 内置目录不直接删除：用户点删除时写进 data/personas/_hidden.json，
+ * 只在列表里隐藏，升级后仍保持隐藏。用户自建文件是物理删除。
  */
 const fs = require('node:fs');
 const path = require('node:path');
 const { portableFields } = require('./portable');
 
 const ID_RE = /^[a-z0-9][a-z0-9._-]{0,60}$/i;
-const MARKET_FILE = /^([a-z][a-z0-9-]{0,47})\.persona\.json$/;
-const MARKET_ID_PREFIX = 'market-';
 const USER_PREFIX = 'user-';
 const USER_FILE = /^user-[a-z0-9-]{1,60}\.json$/i;
 const HIDDEN_FILE = '_hidden.json';
 const MAX_USER_BYTES = 256 * 1024;
-const MAX_MARKET_BYTES = 192 * 1024;
 const MAX_NAME = 40;
 const MAX_DESCRIPTION = 300;
 const USER_ORDER = 9000;
@@ -33,10 +28,6 @@ function dataDirFor(config) {
   if (config && config.paths && config.paths.dataDir) return config.paths.dataDir;
   const root = (config && config.paths && config.paths.root) || path.resolve(__dirname, '..', '..');
   return path.join(root, 'data');
-}
-
-function marketDir(config) {
-  return path.join(dataDirFor(config), 'plugins');
 }
 
 function userDir(config) {
@@ -78,45 +69,9 @@ function writeHidden(config, hidden) {
   writeFileAtomic(hiddenFile(config), JSON.stringify(hidden, null, 2) + '\n');
 }
 
-/** 内置永远保持隐藏；市场预设文件换了（重装/升级）就自动恢复显示 */
-function visibleUnderHidden(config, item, hidden, changed) {
-  const mark = hidden.items[item.id];
-  if (!mark) return true;
-  if (item.source !== 'market') return false;
-  const unchanged = Number(mark.mtimeMs) === Number(item.mtimeMs) && Number(mark.size) === Number(item.size);
-  if (unchanged) return false;
-  delete hidden.items[item.id];
-  changed.value = true;
-  return true;
-}
-
-function marketPreset(config, name) {
-  const match = MARKET_FILE.exec(name);
-  if (!match) return null;
-  try {
-    const dir = marketDir(config);
-    if (!fs.lstatSync(dir).isDirectory() || !fs.lstatSync(path.dirname(dir)).isDirectory()) return null;
-    const file = path.join(dir, name);
-    const stat = fs.lstatSync(file);
-    if (!stat.isFile() || stat.size > MAX_MARKET_BYTES) return null;
-    const data = readFile(file, MAX_MARKET_BYTES);
-    const hasIdentity = data?.schemaVersion === 1 && (typeof data.personaName === 'string' || typeof data.personality === 'string');
-    if (typeof data?.customPrompt !== 'string' || (!data.customPrompt.trim() && !hasIdentity) || data.customPrompt.length > 24000 ||
-        typeof data.name !== 'string' || !data.name.trim() || data.name.length > 80) return null;
-    return {
-      schemaVersion: 1,
-      id: MARKET_ID_PREFIX + match[1],
-      file: name,
-      source: 'market',
-      name: data.name,
-      version: String(data.version || '').slice(0, 40),
-      description: String(data.description || '').slice(0, 600),
-      ...portableFields(data),
-      ...portableFields(readFile(path.join(userDir(config), MARKET_ID_PREFIX + match[1] + '.json')) || {}, { local: true }),
-      mtimeMs: stat.mtimeMs,
-      size: stat.size,
-    };
-  } catch { return null; }
+/** 内置预设一旦删除就保持隐藏 */
+function visibleUnderHidden(hidden, item) {
+  return !hidden.items[item.id];
 }
 
 function userPreset(config, name) {
@@ -129,7 +84,7 @@ function userPreset(config, name) {
     if (!data || typeof data.name !== 'string' || !data.name.trim()) return null;
     return {
       ...data,
-      // 用户文件的 id 一律以文件名为准，避免手改文件冒充内置/市场预设
+      // 用户文件的 id 一律以文件名为准，避免手改文件冒充内置预设
       id: name.replace(/\.json$/i, ''),
       file: name,
       source: 'user',
@@ -142,7 +97,7 @@ function userPreset(config, name) {
   } catch { return null; }
 }
 
-/** 列出可用预设：用户自建 → 内置 → 插件市场；已删除的按标记过滤 */
+/** 列出可用预设：用户自建 → 内置；已删除的按标记过滤 */
 function list(config) {
   const hidden = readHidden(config);
   const changed = { value: false };
@@ -166,7 +121,7 @@ function list(config) {
   let builtinNames = [];
   try {
     builtinNames = fs.readdirSync(dirFor(config)).filter((f) => f.toLowerCase().endsWith('.json'));
-  } catch { /* 市场预设独立于内置目录 */ }
+  } catch { /* 内置目录通常在首次安装前不存在 */ }
   for (const name of builtinNames) {
     const data = readFile(path.join(dirFor(config), name));
     if (!data) continue;
@@ -186,25 +141,15 @@ function list(config) {
       description: String(data.description || ''),
       chars: String(data.customPrompt || '').length,
     };
-    if (!visibleUnderHidden(config, item, hidden, changed)) continue;
+    if (!visibleUnderHidden(hidden, item)) continue;
     out.push(item);
   }
-
-  try {
-    for (const name of fs.readdirSync(marketDir(config))) {
-      const item = marketPreset(config, name);
-      if (!item || out.some((preset) => preset.id === item.id)) continue;
-      if (!visibleUnderHidden(config, item, hidden, changed)) continue;
-      const { customPrompt, ...metadata } = item;
-      out.push({ ...metadata, order: 1e9, chars: String(customPrompt || '').length });
-    }
-  } catch { /* 插件目录通常在首次安装前不存在 */ }
 
   if (changed.value) {
     try { writeHidden(config, hidden); } catch { /* 标记写不进去不影响本次列表 */ }
   }
 
-  const rank = { user: 0, builtin: 1, market: 2 };
+  const rank = { user: 0, builtin: 1 };
   return out.sort((a, b) => (rank[a.source] ?? 9) - (rank[b.source] ?? 9)
     || (a.source === 'user'
       ? (Number(b.updatedAt) || 0) - (Number(a.updatedAt) || 0) || a.id.localeCompare(b.id)
@@ -220,7 +165,6 @@ function load(config, id) {
   if (!key || !ID_RE.test(key)) return null;
   const item = list(config).find((preset) => preset.id === key || preset.file === key || preset.file === key + '.json');
   if (!item) return null;
-  if (item.source === 'market') return marketPreset(config, item.file);
   const dir = item.source === 'user' ? userDir(config) : dirFor(config);
   const data = readFile(path.join(dir, item.file));
   if (!data) return null;
@@ -320,15 +264,9 @@ function saveUser(config, { id = '', name = '', description = '' } = {}) {
   return { ok: true, preset: { ...preset, file: path.basename(file), mtimeMs: now } };
 }
 
-/** 保存人设后同步对应的本地预设，内置和市场原件保留用于升级。 */
+/** 保存人设后同步对应的本地预设，内置原件保留用于升级。 */
 function updateFromConfig(config, id) {
   const key = String(id || '').trim();
-  if (/^market-[a-z][a-z0-9-]{0,47}$/.test(key)) {
-    // 只改本地副本，不触碰下载包；停用时条目消失，重新启用仍保留用户修改。
-    if (!marketPreset(config, key.slice(MARKET_ID_PREFIX.length) + '.persona.json')) return false;
-    writeFileAtomic(path.join(userDir(config), key + '.json'), JSON.stringify(fromConfig(config), null, 2) + '\n');
-    return true;
-  }
   if (!key.toLowerCase().startsWith(USER_PREFIX)) {
     if (!ID_RE.test(key) || !list(config).some(item => item.id === key && item.source === 'builtin')) return false;
     const file = path.join(userDir(config), 'builtin-overrides', key + '.json');
@@ -342,19 +280,8 @@ function updateFromConfig(config, id) {
   return Boolean(result.ok);
 }
 
-function resetMarketCopy(config, id) {
-  const key = String(id || '').trim();
-  if (!/^market-[a-z][a-z0-9-]{0,47}$/.test(key) || !marketPreset(config, key.slice(7) + '.persona.json'))
-    return { ok: false, error: '市场人设不存在或未启用' };
-  try {
-    const file = path.join(userDir(config), key + '.json');
-    if (fs.existsSync(file)) fs.unlinkSync(file);
-    return { ok: true };
-  } catch (err) { return { ok: false, error: '删除本地副本失败：' + err.message }; }
-}
-
 /**
- * 删除预设。内置/市场写隐藏标记，自建物理删除；正在使用的预设拒绝删除。
+ * 删除预设。内置写隐藏标记，自建物理删除；正在使用的预设拒绝删除。
  * @returns {{ok:boolean, error?:string, kind?:string, id?:string}}
  */
 function removePreset(config, id, { currentId = '' } = {}) {
@@ -379,7 +306,6 @@ function removePreset(config, id, { currentId = '' } = {}) {
   hidden.items[key] = {
     source: item.source,
     at: Date.now(),
-    ...(item.source === 'market' ? { mtimeMs: item.mtimeMs, size: item.size } : {}),
   };
   try {
     writeHidden(config, hidden);
@@ -389,7 +315,7 @@ function removePreset(config, id, { currentId = '' } = {}) {
   return { ok: true, kind: item.source, id: key };
 }
 
-/** 当前生效的预设来源：builtin / market / user；手写人设返回空串 */
+/** 当前生效的预设来源：builtin / user；手写人设返回空串 */
 function sourceOf(config, id) {
   const key = String(id || '').trim();
   if (!key) return '';
@@ -444,7 +370,7 @@ function toPatch(preset) {
     if (Object.hasOwn(portable, key)) patch[key] = portable[key];
   }
   // 新包允许显式空值，切换时不能残留上一份人设的正文与外观。
-  if (preset.schemaVersion === 1 || preset.source === 'user' || preset.source === 'market') {
+  if (preset.schemaVersion === 1 || preset.source === 'user') {
     for (const key of ['job', 'appearance', 'personality', 'background', 'customPrompt']) {
       if (Object.hasOwn(portable, key)) patch[key] = portable[key];
     }
@@ -462,7 +388,6 @@ module.exports = {
   fromConfig,
   saveUser,
   updateFromConfig,
-  resetMarketCopy,
   removePreset,
   renamePreset,
   sourceOf,

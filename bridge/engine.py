@@ -46,7 +46,7 @@ if _EXAMPLES_DIR not in sys.path:
 from reminder_watch import start_reminder_watch
 import voice_reply
 import voice_send_test
-from sticker_transport import guarded_send as guarded_sticker_send, read_enabled_config, resolve_target as resolve_sticker_target, result as sticker_result, WindowsDesktop, quarantined_input_value, account_evidence_allowed as sticker_account_evidence_ok, alias_match as sticker_alias_match, _is_blank as sticker_input_is_blank
+from sticker_transport import guarded_send as guarded_sticker_send, read_enabled_config, resolve_target as resolve_sticker_target, result as sticker_result, WindowsDesktop, quarantined_input_value, account_evidence_allowed as sticker_account_evidence_ok, alias_match as sticker_alias_match, _is_blank as sticker_input_is_blank, validate_attachment, AttachmentError
 from config_values import as_bool as _as_bool, as_int as _as_int, as_float as _as_float, parse_bg_send as _parse_bg_send
 import mention
 import mention_meta

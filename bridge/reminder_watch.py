@@ -70,7 +70,7 @@ def _owned_reminder_send(callback, args, wxid, text, **kwargs):
 
 
 def start_reminder_watch(*, http, base, token, send_text, send_at, log,
-                         send_voice=None, display_name=None):
+                         display_name=None):
     """连接实际桥接发送通道；所有 HTTP 回应都必须成功才能继续。"""
     api = KernelApi(http, base, token)
 
@@ -79,20 +79,6 @@ def start_reminder_watch(*, http, base, token, send_text, send_at, log,
         if not wxid:
             raise ValueError("提醒缺少会话 ID，拒绝发送")
         name = str(item.get("name") or '').strip() or (display_name(wxid) if display_name else wxid)
-        if item.get('kind') == 'plugin':
-            def allowed():
-                try:
-                    return api.post('/api/reminders/permission', timeout=3,
-                                    require_ok=False, json={'id': item.get('id')}).get('ok') is True
-                except Exception:
-                    return False
-            if not allowed():
-                return False
-            if item.get('delivery') == 'voice':
-                if send_voice is None:
-                    raise RuntimeError('提醒语音通道未装配')
-                return _owned_reminder_send(send_voice, (text, name, wxid), wxid, text,
-                                            cancelled=lambda: not allowed())
         member = str(item.get("atName") or "").strip()
         if item.get("chatType") == "group" and member:
             return _owned_reminder_send(send_at, (member, text, name, wxid), wxid, text)

@@ -1,0 +1,234 @@
+[
+  {
+    "id": "work-01",
+    "scene": "work",
+    "context": [
+      { "role": "them", "text": "周报你今晚能发我吗" },
+      { "role": "me", "text": "我这边还在核对数据" },
+      { "role": "them", "text": "大概几点" }
+    ],
+    "reference": "今晚够呛，明早十点前给你吧",
+    "notes": "短句、少标点，句尾常用「吧」"
+  },
+  {
+    "id": "work-02",
+    "scene": "work",
+    "context": [
+      { "role": "them", "text": "客户又改需求了，你看到了吗" },
+      { "role": "me", "text": "刚看到" },
+      { "role": "them", "text": "我这边先停了？" }
+    ],
+    "reference": "看到了，先别急着改，等他们定稿再说",
+    "notes": "两个短句，逗号连接"
+  },
+  {
+    "id": "work-03",
+    "scene": "work",
+    "context": [
+      { "role": "them", "text": "下午的会换到三楼小会议室" }
+    ],
+    "reference": "行，我一会儿过去",
+    "notes": "一个字都不多写"
+  },
+  {
+    "id": "work-04",
+    "scene": "work",
+    "context": [
+      { "role": "them", "text": "这个方案你觉得能过吗" },
+      { "role": "me", "text": "我还在看" },
+      { "role": "them", "text": "下午就要定了" }
+    ],
+    "reference": "大方向没问题，细节我下午再过一遍，有坑再跟你说",
+    "notes": "先给结论，再补一句"
+  },
+  {
+    "id": "work-05",
+    "scene": "work",
+    "context": [
+      { "role": "them", "text": "今晚能加个班把这个弄完吗" }
+    ],
+    "reference": "可以，不过我八点得走，剩下的明天补上哈",
+    "notes": "答应但带边界，句尾「哈」"
+  },
+  {
+    "id": "work-06",
+    "scene": "work",
+    "context": [
+      { "role": "them", "text": "上次那个数据你放哪了" },
+      { "role": "me", "text": "我找找" },
+      { "role": "them", "text": "找到了发我" }
+    ],
+    "reference": "共享盘第二层，文件名带日期的那个",
+    "notes": "直接给位置，不寒暄"
+  },
+  {
+    "id": "work-07",
+    "scene": "work",
+    "context": [
+      { "role": "them", "text": "明天上午的评审你参加吗" }
+    ],
+    "reference": "参加，我提前十分钟到",
+    "notes": "回答 + 一个具体动作"
+  },
+  {
+    "id": "work-08",
+    "scene": "work",
+    "context": [
+      { "role": "them", "text": "甲方那边还没回，要不要先做别的" },
+      { "role": "me", "text": "我看看排期" },
+      { "role": "them", "text": "行，你定" }
+    ],
+    "reference": "先把能确定的做掉\n剩下的等他们回话",
+    "notes": "两行，不用句号"
+  },
+  {
+    "id": "friend-01",
+    "scene": "friend",
+    "context": [
+      { "role": "them", "text": "周末去爬山不" }
+    ],
+    "reference": "去啊，几点集合？",
+    "notes": "有问句，语气轻"
+  },
+  {
+    "id": "friend-02",
+    "scene": "friend",
+    "context": [
+      { "role": "them", "text": "你上次说那家店叫什么" },
+      { "role": "me", "text": "我想想" },
+      { "role": "them", "text": "就上次吃鱼那家" }
+    ],
+    "reference": "就街角那家小馆子，招牌菜挺好吃的，你搜一下应该能找到",
+    "notes": "口语化，不给具体店名"
+  },
+  {
+    "id": "friend-03",
+    "scene": "friend",
+    "context": [
+      { "role": "them", "text": "我分手了" }
+    ],
+    "reference": "啊？什么时候的事，你现在还好吧",
+    "notes": "先惊讶再关心，两个问句"
+  },
+  {
+    "id": "friend-04",
+    "scene": "friend",
+    "context": [
+      { "role": "them", "text": "新出的那个游戏你玩了吗" }
+    ],
+    "reference": "还没呢，好玩吗？",
+    "notes": "短，带「呢」和问号"
+  },
+  {
+    "id": "friend-05",
+    "scene": "friend",
+    "context": [
+      { "role": "them", "text": "晚上出来喝点" }
+    ],
+    "reference": "今晚不行，明天还得早起。改周末吧",
+    "notes": "拒绝 + 替代方案，句号分句"
+  },
+  {
+    "id": "friend-06",
+    "scene": "friend",
+    "context": [
+      { "role": "them", "text": "哈哈哈哈你看这个视频" }
+    ],
+    "reference": "笑死，这也太离谱了哈哈哈😂",
+    "notes": "跟着笑，带一个 emoji"
+  },
+  {
+    "id": "friend-07",
+    "scene": "friend",
+    "context": [
+      { "role": "them", "text": "借我两百，下周还你" }
+    ],
+    "reference": "行，我转你",
+    "notes": "极短，不解释"
+  },
+  {
+    "id": "friend-08",
+    "scene": "friend",
+    "context": [
+      { "role": "them", "text": "我最近开始跑步了" }
+    ],
+    "reference": "挺好啊，别一上来就猛跑，容易伤膝盖",
+    "notes": "先肯定再提醒"
+  },
+  {
+    "id": "family-01",
+    "scene": "family",
+    "context": [
+      { "role": "them", "text": "这周末回来吃饭吗" }
+    ],
+    "reference": "回，周六下午到，别做太多菜😄",
+    "notes": "回答 + 具体时间 + 关心"
+  },
+  {
+    "id": "family-02",
+    "scene": "family",
+    "context": [
+      { "role": "them", "text": "你妈让你多穿点" },
+      { "role": "me", "text": "知道了" },
+      { "role": "them", "text": "别光答应" }
+    ],
+    "reference": "知道了，穿得挺厚的",
+    "notes": "重复对方的话，补一句事实"
+  },
+  {
+    "id": "family-03",
+    "scene": "family",
+    "context": [
+      { "role": "them", "text": "孩子满月酒你来吗" }
+    ],
+    "reference": "来啊，几号？我好请假",
+    "notes": "先答应再问细节"
+  },
+  {
+    "id": "family-04",
+    "scene": "family",
+    "context": [
+      { "role": "them", "text": "家里水管又漏了" }
+    ],
+    "reference": "先关总阀，我明天回去看看",
+    "notes": "给动作，不慌乱"
+  },
+  {
+    "id": "family-05",
+    "scene": "family",
+    "context": [
+      { "role": "them", "text": "给你寄了点吃的，记得收" }
+    ],
+    "reference": "好，到了我跟你说",
+    "notes": "短句确认"
+  },
+  {
+    "id": "family-06",
+    "scene": "family",
+    "context": [
+      { "role": "them", "text": "最近工作累不累" }
+    ],
+    "reference": "还行，就是事多点，不用担心",
+    "notes": "轻描淡写，反过来安慰"
+  },
+  {
+    "id": "family-07",
+    "scene": "family",
+    "context": [
+      { "role": "them", "text": "你表弟高考成绩出来了" }
+    ],
+    "reference": "考得怎么样？",
+    "notes": "只问一句，不评价"
+  },
+  {
+    "id": "family-08",
+    "scene": "family",
+    "context": [
+      { "role": "them", "text": "怎么这么久没打电话" },
+      { "role": "me", "text": "前阵子有点忙" },
+      { "role": "them", "text": "忙也得顾着家里" }
+    ],
+    "reference": "这阵子忙忘了，我这两天给你打",
+    "notes": "认错 + 给时间"
+  }
+]

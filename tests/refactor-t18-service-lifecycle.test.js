@@ -35,7 +35,7 @@ test('crash and ordinary logs use the common fail-closed sanitizer without weake
   assert.match(read('launcher/Views/DiagPage.xaml.cs'), /SecretRedactor\.Redact\(text\)/);
 });
 
-test('bounded runner has the real offline snapshot consumer and leaves plugin and reserved paths alone', () => {
+test('bounded runner has the real offline snapshot consumer and leaves reserved paths alone', () => {
   const runner = read('launcher/ProcessRunner.cs');
   const local = read('launcher/LocalConfiguration.cs');
   assert.match(local, /ProcessRunner\.RunAsync/);
@@ -43,8 +43,6 @@ test('bounded runner has the real offline snapshot consumer and leaves plugin an
   assert.match(runner, /ReadToEndAsync|ReadOutputAsync/);
   assert.match(runner, /Kill\(entireProcessTree:\s*true\)/);
   assert.match(runner, /Stopwatch|TimeProvider/);
-  assert.match(read('launcher/PluginMarket.cs'), /start\.Environment\.Clear\(\)/);
-  assert.match(read('launcher/PluginMarket.cs'), /--wasm-max-mem-pages=16/);
   assert.match(read('launcher/ProcessJob.cs'), /KILL_ON_JOB_CLOSE/);
   assert.match(read('launcher/Views/DiagPage.xaml.cs'), /private (?:async )?Task<\(int Code, string Output\)> RunToolAsync\(/,
     'the reserved diagnostic caller wrapper remains available; its pending F42 body is not locked into a test');

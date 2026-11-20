@@ -8,17 +8,20 @@
     <CetCompat Condition="'$(WhaleLegacyWindows)' == 'true'">false</CetCompat>
     <AssemblyName>WhaleLauncher</AssemblyName>
     <RootNamespace>WhaleLauncher</RootNamespace>
-    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <!-- 正式版必须提权（桥接要读管理员运行的微信）；测试构建改用 asInvoker，避免每次弹 UAC。
+         切换只发生在 -p:WhaleTestBuild=true，正式发布路径不受影响。 -->
+    <ApplicationManifest Condition="'$(WhaleTestBuild)' == 'true'">app.test.manifest</ApplicationManifest>
+    <ApplicationManifest Condition="'$(WhaleTestBuild)' != 'true'">app.manifest</ApplicationManifest>
     <!-- 窗口/任务栏/exe 文件图标：应用图标（当前仍是旧素材，待替换为通用图标） -->
     <ApplicationIcon>Assets\app.ico</ApplicationIcon>
-    <Version>4.1.8</Version>
+    <Version>5.0.0</Version>
     <!-- 产品版本只写版本号，别让 SDK 把 git sha 拼成 4.0.0+ae20f30：
          SignPath 的 artifact configuration 用 product-version 做元数据约束，
          值必须每次构建都一致；用户看到的「产品版本」也不该是个提交号。 -->
     <InformationalVersion>$(Version)</InformationalVersion>
     <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
     <ProductVersion>$(Version)</ProductVersion>
-    <FileVersion>4.1.8.0</FileVersion>
+    <FileVersion>5.0.0.0</FileVersion>
     <Product>助手</Product>
     <AssemblyTitle>助手 · 启动器</AssemblyTitle>
     <Company>助手</Company>
@@ -34,14 +37,7 @@
   <ItemGroup>
     <PackageReference Include="NAudio" Version="2.2.1" />
     <Resource Include="Assets\app.ico" />
-    <EmbeddedResource Include="..\docs\插件市场规范.md" LogicalName="WhaleLauncher.PluginRulesGuide.md" />
-    <EmbeddedResource Include="..\docs\插件免责声明.md" LogicalName="WhaleLauncher.PluginDisclaimer.md" />
-    <EmbeddedResource Include="..\docs\插件作者入门.md" LogicalName="WhaleLauncher.PluginAuthorGuide.md" />
-    <EmbeddedResource Include="..\docs\插件消息流程Api3.md" LogicalName="WhaleLauncher.PluginMessageGuide.md" />
-    <EmbeddedResource Include="..\docs\插件JavaScriptApi4.md" LogicalName="WhaleLauncher.PluginJavaScriptGuide.md" />
-    <EmbeddedResource Include="..\docs\插件下载指南.md" LogicalName="WhaleLauncher.PluginDownloadGuide.md" />
     <EmbeddedResource Include="..\scripts\vb-cable-pack45.json" LogicalName="WhaleLauncher.VbCablePack45.json" />
-    <EmbeddedResource Include="..\docs\插件安全检测.md" LogicalName="WhaleLauncher.PluginSecurityGuide.md" />
     <EmbeddedResource Include="Assets\minimax-voices.json" LogicalName="WhaleLauncher.MiniMaxVoices.json" />
   </ItemGroup>
 

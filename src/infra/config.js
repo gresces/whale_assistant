@@ -209,6 +209,13 @@ const DEFAULT_CONFIG = {
   // timezone 是全局唯一时区来源：留空 = 系统时区；日记、主动搭话、提醒、朋友圈、
   // 聊天时间戳和提示词 <env> 都按它算，不再各用各的。
   env: { location: '', timezone: '', autoDetect: true },
+  // 数字人分身：只有总开关打开、在时段内、且对象策略不是 off 时才以主人身份说话。
+  // 默认关闭；对象未登记时强制 off（见 src/security/access.js）。
+  onDuty: {
+    enabled: false,
+    workingHours: { start: '09:00', end: '19:00', days: [1, 2, 3, 4, 5] },
+    sensitiveTopics: ['转账', '合同', '签字', '密码', '验证码', '身份证', '医疗', '法律', '借钱'],
+  },
   // 提醒：规则和 care 同语义（每天上限 / 刚聊过先跳过），配置独立、界面独立。
   // 提醒不设时间段：它是用户指定的准点事件，卡时间窗只会让提醒发不出去。
   reminder: { enabled: true, maxPerDay: 0, quietAfterMinutes: 0 },
@@ -247,7 +254,6 @@ const DEFAULT_CONFIG = {
   },
   // 图片理解：默认智谱 GLM-4V-Flash（免费）
   features: {
-    javascriptPlugins: false,
     stickers: false,
     // 系统提示词静态化（前缀缓存）：关掉 = 回到「每轮都塞时间/心情/说话人」的旧行为
     staticSystem: true,
@@ -262,6 +268,10 @@ const DEFAULT_CONFIG = {
     // 对话风格画像：有 data/style-profile.json 时把它注入提示词；没有文件时无效果。
     // 只统计句长/标点/语气词，可选让模型总结（需要用户明确开启）。
     styleProfile: true,
+    // 数字人分身内核：关闭时完全不读 self-model / 权限策略，在岗行为回到普通助手。
+    selfModel: true,
+    // 可分享资产（数字人分身的文件/图片通道）：默认开，桥接 gate 与表情包共用。
+    shareAssets: true,
   },
 
   storage: {

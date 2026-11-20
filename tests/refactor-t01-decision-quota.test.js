@@ -23,21 +23,13 @@ function fixture(t, options = {}) {
   const llm = options.llm || { isMock: false, model: 'fixture', async complete() { return 'fixture answer'; } };
   const bot = new Bot({ config, store, llm, logger: null, now: () => new Date(clock), rng: () => 0.99,
     calibration: { trimScale: () => 1, apply: n => ({ scale: 1, calibrated: n, n: 0 }) } });
-  const control = { pre: 'pass', ...options };
-  const hooks = [];
-  bot.messagePlugins = { supports: () => false, async run(hook, context) {
-    hooks.push(hook);
-    if (control.throwHook === hook) throw new Error('fixture hook failure');
-    return { action: hook === 'chat.pre_reply' ? control.pre : 'pass', system: context.system,
-      text: hook === 'chat.generate' && control.generated !== undefined ? control.generated : context.text };
-  } };
   t.after(() => {
     store.close();
     assert.equal(path.dirname(root), os.tmpdir());
     assert.ok(path.basename(root).startsWith('whale-t01-quota-'));
     fs.rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
   });
-  return { bot, store, config, control, hooks, now: () => clock, advance: ms => { clock += ms; } };
+  return { bot, store, config, now: () => clock, advance: ms => { clock += ms; } };
 }
 function message(id, extra = {}) {
   return { platform: 'web', chatId: id, chatType: 'group', senderId: 'fixture-user', senderName: 'FixtureUser',
@@ -118,8 +110,8 @@ test('finalize is idempotent for count, stored assistant, and returned bubbles',
   assert.equal(f.store.messages(d.key, 100).filter(m => m.role === 'assistant').length, 1);
 });
 
-test('empty/plugin-empty/late hook failure release admission for the next turn', async t => {
-  for (const kind of ['empty', 'plugin-empty', 'hook-error', 'budget']) {
+test('empty and late budget failures release admission for the next turn', async t => {
+  for (const kind of ['empty', 'budget']) {
     const f = fixture(t);
     f.bot.globalReplyTimes = Array(29).fill(f.now());
     let result;
@@ -127,12 +119,6 @@ test('empty/plugin-empty/late hook failure release admission for the next turn',
       f.bot.llm.complete = async () => '米饭';
       result = await f.bot.handle(message('reject-' + kind));
       f.bot.llm.complete = async () => 'fixture answer';
-    } else if (kind === 'plugin-empty') {
-      f.control.generated = '';
-      result = await f.bot.handle(message('reject-' + kind)); delete f.control.generated;
-    } else if (kind === 'hook-error') {
-      f.control.throwHook = 'chat.generate';
-      result = await f.bot.handle(message('reject-' + kind)); delete f.control.throwHook;
     } else {
       const build = f.bot.buildTurns;
       f.bot.buildTurns = () => [{ role: 'user', content: '长'.repeat(150000) }];
@@ -176,15 +162,13 @@ test('cancellation discards a late model result and releases exactly one slot', 
 });
 
 test('normal denied decisions do not apply speculative engagement or consent effects', async t => {
-  for (const kind of ['global', 'session', 'plugin-empty', 'muted', 'plugin-skip']) {
+  for (const kind of ['global', 'session', 'muted']) {
     const f = fixture(t);
     const msg = message('effects-' + kind, { atMe: true, text: '可以骂我' });
     const current = state(f, msg);
     if (kind === 'global') f.bot.globalReplyTimes = Array(30).fill(f.now());
     if (kind === 'session') current.replyTimes = Array(30).fill(f.now());
-    if (kind === 'plugin-empty') f.control.generated = '';
     if (kind === 'muted') current.mutedUntil = f.now() + 600000;
-    if (kind === 'plugin-skip') f.control.pre = 'skip';
     const before = structuredClone(current);
     const d = await f.bot.decide(msg);
     assert.equal(d.action, 'ignore', kind);
@@ -192,10 +176,10 @@ test('normal denied decisions do not apply speculative engagement or consent eff
   }
 });
 
-test('silent/muted/plugin and early reminder/dismiss/admin lane precedence remains', async t => {
+test('silent/muted and early reminder/dismiss/admin lane precedence remains', async t => {
   for (const [kind, expectedAction, expectedReason] of [
     ['silent-peer', 'ignore', 'silent'], ['silent-owner', 'reply', 'addressed'],
-    ['muted-owner', 'ignore', 'muted'], ['plugin-wake-muted', 'ignore', 'muted'],
+    ['muted-owner', 'ignore', 'muted'],
     ['dismiss', 'reply', 'dismissed'], ['reminder', 'reply', 'reminder_list'], ['admin', 'command', 'admin'],
     ['admin-peer', 'ignore', 'muted'],
   ]) {
@@ -210,8 +194,7 @@ test('silent/muted/plugin and early reminder/dismiss/admin lane precedence remai
     const s = state(f, m);
     if (kind.startsWith('silent')) s.silentUntil = f.now() + 600000;
     if (kind.endsWith('owner')) { m.platform = 'wechat'; m.senderId = 'fixture-owner'; Object.assign(state(f, m), s); }
-    if (kind.startsWith('muted') || kind === 'plugin-wake-muted') state(f, m).mutedUntil = f.now() + 600000;
-    if (kind === 'plugin-wake-muted') f.control.pre = 'wake';
+    if (kind.startsWith('muted')) state(f, m).mutedUntil = f.now() + 600000;
     if (kind === 'dismiss') { m.text = '闭嘴'; s.mutedUntil = f.now() + 600000; }
     if (kind === 'reminder') { m.text = '提醒列表'; s.mutedUntil = f.now() + 600000; f.bot.reminders = { pendingFor: () => [] }; }
     if (kind === 'admin' || kind === 'admin-peer') { m.text = '管理状态'; s.mutedUntil = f.now() + 600000; }
@@ -222,6 +205,5 @@ test('silent/muted/plugin and early reminder/dismiss/admin lane precedence remai
       assert.equal(result.msg.newPersonaBehavior, true);
       assert.equal(result.commandType, undefined);
     }
-    if (['dismiss', 'reminder', 'admin'].includes(kind)) assert.ok(!f.hooks.includes('chat.pre_reply'), kind);
   }
 });

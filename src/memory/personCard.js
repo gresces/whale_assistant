@@ -9,6 +9,7 @@
  */
 const { LIMITS, DAY_MS } = require('./constants');
 const { shortId } = require('./hash');
+const { normalizeScopes } = require('../security/access');
 
 class MemoryIsolationError extends Error {
   constructor(message) {
@@ -91,6 +92,8 @@ function newCard({ chatId, uid, name = '', nickname = '', now = Date.now() }) {
     preferences: [],
     events: [],
     threads: [],
+    // L2 只对该对象生效的语气覆盖（契约 §11.4），不写回 L1。
+    overrides: { toneOverride: '', addressAs: '', tabooTopics: [] },
     count: 0,
     firstSeenAt: at,
     lastSeenAt: at,
@@ -123,6 +126,13 @@ function normalizeCard(raw, expected = {}) {
     .sort((a, b) => String(b.date).localeCompare(String(a.date)) || (b.createdAt || 0) - (a.createdAt || 0))
     .slice(0, LIMITS.maxEventsPerPerson);
   card.threads = (Array.isArray(raw.threads) ? raw.threads : []).map((t) => normalizeThread(t, now)).filter(Boolean).slice(0, LIMITS.maxThreadsPerPerson);
+  const ov = raw.overrides && typeof raw.overrides === 'object' ? raw.overrides : {};
+  card.overrides = {
+    toneOverride: text(ov.toneOverride, 120),
+    addressAs: text(ov.addressAs, 40),
+    tabooTopics: (Array.isArray(ov.tabooTopics) ? ov.tabooTopics : [])
+      .map((item) => text(item, 20)).filter(Boolean).slice(0, 10),
+  };
   return card;
 }
 
@@ -152,6 +162,9 @@ function normalizePreference(raw, now) {
     key: text(raw.key, 60),
     text: body,
     kind: text(raw.kind, 20) || 'fact',
+    // L2 条目来源：只有 self 才可能被显式提升到 L1；未知来源一律按 other。
+    about: raw.about === 'self' ? 'self' : 'other',
+    scopes: normalizeScopes(raw.scopes),
     confidence: clampNum(raw.confidence, 0, 1, 0.7),
     source,
     createdAt: Number(raw.createdAt) || now,
@@ -241,6 +254,8 @@ function preferenceToNote(p) {
   return {
     text: p.text,
     kind: p.kind || 'fact',
+    about: p.about === 'self' ? 'self' : 'other',
+    scopes: Array.isArray(p.scopes) ? p.scopes.slice() : [],
     confidence: p.confidence,
     importance: Math.max(1, Math.min(3, Math.round((Number(p.confidence) || 0.7) * 3))),
     createdAt: p.createdAt,
@@ -312,6 +327,7 @@ function addPreference(card, entry, { chatId, now = Date.now() } = {}) {
   const item = normalizePreference({
     id: `pf_${shortId(`${card.chatId}|${key}|${body}`)}`,
     key, text: body, kind: entry.kind || 'fact', confidence, source,
+    about: entry.about, scopes: entry.scopes,
     createdAt: at, lastMentionedAt: at, mentions: 1, legacy: Boolean(entry.legacy),
   }, at);
   // 用户明确纠正 / 手动记住：最高置信度

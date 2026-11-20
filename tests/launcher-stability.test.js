@@ -176,7 +176,7 @@ test('模型页所有输入都自动保存（失焦/换选项/勾选），手动
   assert.match(code, /Content = "保存看图设置"/, '看图的手动保存按钮也不能删');
 });
 
-test('提醒页的输入也自动保存，手动按钮保留', () => {
+test('提醒页的输入也自动保存，页面不再放「保存」按钮', () => {
   const code = read('Views/ReminderPage.xaml.cs');
   assert.match(code, /TxtMaxPerDay\.LostFocus \+= async/, '每天次数失焦要保存');
   assert.match(code, /TxtQuiet\.LostFocus \+= async/, '跳过时长失焦要保存');
@@ -184,6 +184,9 @@ test('提醒页的输入也自动保存，手动按钮保留', () => {
   assert.match(code, /TxtCareEvery\.LostFocus|\{ TxtCareEvery, TxtCareJitter/, '主动搭话的输入要保存');
   assert.match(code, /async Task<bool> SaveCareAsync\(\)/, '主动搭话要抽出可复用的保存');
   assert.match(code, /async Task<bool> SaveRulesAsync\(\)/, '提醒规则要抽出可复用的保存');
+  const xaml = read('Views/ReminderPage.xaml');
+  assert.doesNotMatch(xaml, /x:Name="BtnSave(Diary|Rules|Care)"/, '三处保存按钮应移除，改为即时保存');
+  assert.match(code, /DiaryTitleStatus|RulesTitleStatus|CareTitleStatus/, '标题旁要显示已保存时间');
 });
 
 test('黑白名单在发言范围窗口内直接搜索勾选，勾选即保存', () => {

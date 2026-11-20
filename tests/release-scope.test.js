@@ -30,13 +30,10 @@ test('4.1.0 恢复朋友圈与日记，表情收集保持独立开关', () => {
   ]) {
     const hits = router.routes.filter((r) => r.method === method && r.path === route);
     assert.equal(hits.length, 1, `${method} ${route} 应只注册一次`);
-    assert.ok(
-      runtime.pluginApiRoutes.some((r) => r.method === method && r.path === route),
-      `${method} ${route} 应出现在插件 API 清单里`
-    );
   }
 
-  assert.match(read('launcher/MainWindow.xaml.cs'), /MomentsPage|Key = "朋友圈"/);
+  assert.match(read('launcher/MainWindow.xaml.cs') + read('launcher/Views/FunctionPage.xaml.cs'),
+    /MomentsPage|Key = "朋友圈"|"moments", "朋友圈"/);
   assert.match(read('launcher/Views/ReminderPage.xaml'), /ChkDiaryEnabled/);
   assert.match(read('launcher/Views/StickerPage.xaml'), /ChkCollect/);
   assert.match(read('bridge/app.py'), /moments_reader|from moments import/);

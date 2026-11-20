@@ -30,8 +30,27 @@ module.exports = function register(router) {
     if (!isLoopbackRequest(req)) return json(res, 403, { ok: false, error: '记忆管理只允许在本机操作' });
     const groups = [...runtime.store.chatStore.chats.values()]
       .filter((chat) => !groupsOnly || chat.platform === 'wechat' && chat.chatType === 'group')
-      .map((chat) => ({ key: chat.chatId, title: chat.title || chat.chatId, chatType: chat.chatType, platform: chat.platform,
-        messageCount: chat.messages.length, peopleCount: chat.people.size, lastActiveAt: chat.lastActiveAt }))
+      .map((chat) => {
+        // 分身「对象权限」页要用这些字段直接建策略；既有字段（key/title/...）保持原样。
+        const uid = chat.platform === 'wechat'
+          ? String(chat.chatId).replace(/^wechat:[ug]:/, '')
+          : String(chat.chatId);
+        const person = chat.chatType === 'private'
+          ? [...chat.people.values()].map((card) => card.name).find(Boolean)
+          : '';
+        return {
+          key: chat.chatId,
+          uid,
+          chatId: chat.chatId,
+          name: chat.title || person || uid,
+          title: chat.title || chat.chatId,
+          chatType: chat.chatType,
+          platform: chat.platform,
+          messageCount: chat.messages.length,
+          peopleCount: chat.people.size,
+          lastActiveAt: chat.lastActiveAt,
+        };
+      })
       .sort((a, b) => b.lastActiveAt - a.lastActiveAt);
     return json(res, 200, { ok: true, [field]: groups });
   });

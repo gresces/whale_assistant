@@ -21,21 +21,21 @@
         <SolidColorBrush x:Key="Text2" Color="#FFC5C5C5" />
         <SolidColorBrush x:Key="Muted" Color="#FF9A9A9A" />
         <SolidColorBrush x:Key="Dim" Color="#FF969696" />
-        <SolidColorBrush x:Key="Accent" Color="#FF4CC2C4" />
-        <SolidColorBrush x:Key="AccentDim" Color="#FF203838" />
-        <SolidColorBrush x:Key="AccentSoft" Color="#FF2A3B3B" />
+        <SolidColorBrush x:Key="Accent" Color="#FF479EF5" />
+        <SolidColorBrush x:Key="AccentDim" Color="#FF082338" />
+        <SolidColorBrush x:Key="AccentSoft" Color="#FF0B2E4A" />
         <SolidColorBrush x:Key="Ok" Color="#FF6CCB7C" />
         <SolidColorBrush x:Key="Warn" Color="#FFF2C94C" />
         <SolidColorBrush x:Key="Bad" Color="#FFFF6B6B" />
         <SolidColorBrush x:Key="Idle" Color="#FF8A8A8A" />
-        <SolidColorBrush x:Key="PrimaryBg" Color="#FF4CC2C4" />
-        <SolidColorBrush x:Key="PrimaryFg" Color="#FF102A2B" />
-        <SolidColorBrush x:Key="PrimaryHover" Color="#FF5FD3D5" />
+        <SolidColorBrush x:Key="PrimaryBg" Color="#FF115EA3" />
+        <SolidColorBrush x:Key="PrimaryFg" Color="#FFFFFFFF" />
+        <SolidColorBrush x:Key="PrimaryHover" Color="#FF0F6CBD" />
         <SolidColorBrush x:Key="GhostBg" Color="#FF2D2D2D" />
         <SolidColorBrush x:Key="GhostHover" Color="#FF383838" />
         <SolidColorBrush x:Key="Hover" Color="#FF333333" />
         <SolidColorBrush x:Key="FieldBg" Color="#FF2D2D2D" />
-        <SolidColorBrush x:Key="FieldBorder" Color="#FF454545" />
+        <SolidColorBrush x:Key="FieldBorder" Color="#FF9A9A9A" />
         <SolidColorBrush x:Key="PopupBg" Color="#FF2C2C2C" />
         <SolidColorBrush x:Key="ChipBg" Color="#FF2A2A2A" />
         <SolidColorBrush x:Key="Surface3" Color="#FF333333" />
@@ -69,20 +69,27 @@
         <Style TargetType="TextBlock">
             <Setter Property="Effect" Value="{DynamicResource TextHalo}" />
         </Style>
+        <!-- Fluent 2 排版：Title3 24/32、Subtitle2 16/22、Body1 14/20、Caption1 12/16。 -->
         <Style TargetType="TextBlock" x:Key="H1">
             <Setter Property="Foreground" Value="{DynamicResource Text}" />
             <Setter Property="Effect" Value="{DynamicResource TextHalo}" />
             <Setter Property="FontFamily" Value="{StaticResource DisplayFont}" />
-            <Setter Property="FontSize" Value="28" />
+            <Setter Property="FontSize" Value="24" />
             <Setter Property="FontWeight" Value="SemiBold" />
-            <Setter Property="LineHeight" Value="38" />
+            <Setter Property="LineHeight" Value="32" />
             <Setter Property="LineStackingStrategy" Value="BlockLineHeight" />
         </Style>
         <Style TargetType="TextBlock" x:Key="H2">
             <Setter Property="Foreground" Value="{DynamicResource Text}" />
             <Setter Property="Effect" Value="{DynamicResource TextHalo}" />
-            <Setter Property="FontSize" Value="14" />
+            <Setter Property="FontSize" Value="16" />
             <Setter Property="FontWeight" Value="SemiBold" />
+            <Setter Property="LineHeight" Value="22" />
+        </Style>
+        <Style TargetType="TextBlock" x:Key="Body1">
+            <Setter Property="Foreground" Value="{DynamicResource Text}" />
+            <Setter Property="Effect" Value="{DynamicResource TextHalo}" />
+            <Setter Property="FontSize" Value="14" />
             <Setter Property="LineHeight" Value="20" />
         </Style>
         <Style TargetType="TextBlock" x:Key="Label">
@@ -90,17 +97,20 @@
             <Setter Property="Effect" Value="{DynamicResource TextHalo}" />
             <Setter Property="FontSize" Value="12" />
             <Setter Property="FontWeight" Value="SemiBold" />
+            <Setter Property="LineHeight" Value="16" />
         </Style>
+        <!-- 只给时间、计数、路径这类元数据用，不当正文解释。 -->
         <Style TargetType="TextBlock" x:Key="Small">
             <Setter Property="Foreground" Value="{DynamicResource Dim}" />
             <Setter Property="Effect" Value="{DynamicResource TextHalo}" />
-            <Setter Property="FontSize" Value="11.5" />
-            <Setter Property="LineHeight" Value="17" />
+            <Setter Property="FontSize" Value="12" />
+            <Setter Property="LineHeight" Value="16" />
         </Style>
         <Style TargetType="TextBlock" x:Key="Value">
             <Setter Property="Foreground" Value="{DynamicResource Text}" />
             <Setter Property="Effect" Value="{DynamicResource TextHalo}" />
-            <Setter Property="FontSize" Value="13" />
+            <Setter Property="FontSize" Value="14" />
+            <Setter Property="LineHeight" Value="20" />
         </Style>
 
         <Style TargetType="Label">
@@ -125,7 +135,7 @@
         <!-- 导航项：40px 行高、6px 圆角、左侧 3px 强调条 -->
         <Style TargetType="ListBoxItem" x:Key="NavItem">
             <Setter Property="Foreground" Value="{DynamicResource Muted}" />
-            <Setter Property="FontSize" Value="13" />
+            <Setter Property="FontSize" Value="14" />
             <Setter Property="Cursor" Value="Hand" />
             <Setter Property="HorizontalContentAlignment" Value="Stretch" />
             <Setter Property="FocusVisualStyle" Value="{StaticResource FluentFocusVisual}" />
@@ -178,14 +188,14 @@
             </Setter>
         </Style>
 
-        <!-- 按钮：主按钮实心青绿，次按钮灰面，圆角 4 -->
+        <!-- 按钮：主按钮品牌蓝，次按钮灰面，圆角 4 -->
         <Style TargetType="Button" x:Key="Primary">
             <Setter Property="Foreground" Value="{DynamicResource PrimaryFg}" />
             <Setter Property="Background" Value="{DynamicResource PrimaryBg}" />
             <Setter Property="BorderBrush" Value="{DynamicResource PrimaryBg}" />
             <Setter Property="BorderThickness" Value="0" />
             <Setter Property="Padding" Value="16,6" />
-            <Setter Property="FontSize" Value="12.5" />
+            <Setter Property="FontSize" Value="14" />
             <Setter Property="FontWeight" Value="SemiBold" />
             <Setter Property="Cursor" Value="Hand" />
             <Setter Property="FocusVisualStyle" Value="{StaticResource FluentFocusVisual}" />
@@ -237,7 +247,7 @@
             <Setter Property="BorderBrush" Value="{DynamicResource CardBorder}" />
             <Setter Property="BorderThickness" Value="1" />
             <Setter Property="Padding" Value="14,6" />
-            <Setter Property="FontSize" Value="12.5" />
+            <Setter Property="FontSize" Value="14" />
             <Setter Property="Cursor" Value="Hand" />
             <Setter Property="FocusVisualStyle" Value="{StaticResource FluentFocusVisual}" />
             <Setter Property="Template">
@@ -351,7 +361,7 @@
         <!-- 复选框 -->
         <Style TargetType="CheckBox" x:Key="DarkCheck">
             <Setter Property="Foreground" Value="{DynamicResource Text2}" />
-            <Setter Property="FontSize" Value="12.5" />
+            <Setter Property="FontSize" Value="13" />
             <Setter Property="Cursor" Value="Hand" />
             <Setter Property="FocusVisualStyle" Value="{x:Null}" />
             <Setter Property="Template">
@@ -375,8 +385,8 @@
                                 <Setter TargetName="box" Property="BorderBrush" Value="{DynamicResource Accent}" />
                             </Trigger>
                             <Trigger Property="IsChecked" Value="True">
-                                <Setter TargetName="box" Property="Background" Value="{DynamicResource Accent}" />
-                                <Setter TargetName="box" Property="BorderBrush" Value="{DynamicResource Accent}" />
+                                <Setter TargetName="box" Property="Background" Value="{DynamicResource PrimaryBg}" />
+                                <Setter TargetName="box" Property="BorderBrush" Value="{DynamicResource PrimaryBg}" />
                                 <Setter TargetName="tick" Property="Visibility" Value="Visible" />
                             </Trigger>
                             <Trigger Property="IsKeyboardFocused" Value="True">
@@ -396,7 +406,7 @@
         <!-- 下拉框 -->
         <Style TargetType="ComboBoxItem" x:Key="DarkComboItem">
             <Setter Property="Foreground" Value="{DynamicResource Text2}" />
-            <Setter Property="FontSize" Value="12.5" />
+            <Setter Property="FontSize" Value="13" />
             <Setter Property="Padding" Value="10,7" />
             <Setter Property="FocusVisualStyle" Value="{x:Null}" />
             <Setter Property="Template">
@@ -431,7 +441,7 @@
 
         <Style TargetType="ComboBox" x:Key="DarkCombo">
             <Setter Property="Foreground" Value="{DynamicResource Text}" />
-            <Setter Property="FontSize" Value="12.5" />
+            <Setter Property="FontSize" Value="13" />
             <Setter Property="Height" Value="34" />
             <Setter Property="FocusVisualStyle" Value="{x:Null}" />
             <Setter Property="ItemContainerStyle" Value="{StaticResource DarkComboItem}" />
@@ -735,7 +745,7 @@
         <!-- 展开区：标题行 + 右侧箭头，展开时箭头翻转 -->
         <Style TargetType="Expander">
             <Setter Property="Foreground" Value="{DynamicResource Text2}" />
-            <Setter Property="FontSize" Value="13" />
+            <Setter Property="FontSize" Value="14" />
             <Setter Property="HorizontalContentAlignment" Value="Stretch" />
             <Setter Property="FocusVisualStyle" Value="{x:Null}" />
             <Setter Property="Template">
@@ -744,6 +754,8 @@
                         <Border Background="Transparent">
                             <DockPanel>
                                 <ToggleButton x:Name="HeaderButton" DockPanel.Dock="Top" Focusable="True"
+                                              Content="{TemplateBinding Header}"
+                                              Foreground="{TemplateBinding Foreground}"
                                               FocusVisualStyle="{StaticResource FluentFocusVisual}"
                                               IsChecked="{Binding IsExpanded, RelativeSource={RelativeSource TemplatedParent}, Mode=TwoWay}">
                                     <ToggleButton.Template>
@@ -751,6 +763,7 @@
                                             <Border x:Name="hb" Background="Transparent" CornerRadius="4" Padding="0,8">
                                                 <Grid>
                                                     <ContentPresenter ContentSource="Content" Margin="0,0,28,0"
+                                                                      TextElement.Foreground="{TemplateBinding Foreground}"
                                                                       VerticalAlignment="Center" RecognizesAccessKey="True" />
                                                     <Path x:Name="chevDown" Data="M0,0 L4,4 L8,0"
                                                           Stroke="{DynamicResource Muted}" StrokeThickness="1.6"
@@ -820,7 +833,7 @@
             <Setter Property="BorderThickness" Value="1" />
             <Setter Property="Padding" Value="4" />
             <Setter Property="FontFamily" Value="{StaticResource UiFont}" />
-            <Setter Property="FontSize" Value="12.5" />
+            <Setter Property="FontSize" Value="13" />
             <Setter Property="Template">
                 <Setter.Value>
                     <ControlTemplate TargetType="ContextMenu">

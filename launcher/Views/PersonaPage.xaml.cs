@@ -21,7 +21,7 @@ namespace WhaleLauncher.Views
         public override string ToString() => Label ?? Id ?? "";
     }
 
-    public partial class PersonaPage : UserControl, IRefreshable
+    public partial class PersonaPage : UserControl, IRefreshable, IEmbeddedPage
     {
         private readonly RuntimeSupervisor _sup;
         private readonly DispatcherTimer _saveTimer;
@@ -48,8 +48,7 @@ namespace WhaleLauncher.Views
         public PersonaPage(RuntimeSupervisor sup)
         {
             InitializeComponent();
-            _sup = sup;
-            foreach (var field in new TextBox[] { TxtName, TxtAge, TxtJob, TxtLook, TxtPerson, TxtBack,
+            _sup = sup;            foreach (var field in new TextBox[] { TxtName, TxtAge, TxtJob, TxtLook, TxtPerson, TxtBack,
                 TxtPrompt, TxtOwner, TxtAliases, TxtPrivate, TxtGroup, TxtBubbles, TxtTurns, TxtGroupTurns })
                 field.TextChanged += OnPersonaTextChanged;
 
@@ -68,6 +67,16 @@ namespace WhaleLauncher.Views
             };
 
             Loaded += async (_, __) => await RefreshAsync();
+        }
+
+        public bool Embedded
+        {
+            set
+            {
+                if (!value) return;
+                PageHeader.Visibility = Visibility.Collapsed;
+                PageRoot.Margin = new Thickness(0);
+            }
         }
 
         public async Task RefreshAsync()
@@ -670,7 +679,6 @@ namespace WhaleLauncher.Views
                     var tag = source switch
                     {
                         "user" => "我的",
-                        "market" => "市场",
                         _ => "内置",
                     };
                     items.Add(new PresetItem
@@ -708,7 +716,6 @@ namespace WhaleLauncher.Views
             BtnUpdatePreset.IsEnabled = selected != null && selected.IsUser && isCurrent;
             BtnRenamePreset.IsEnabled = selected != null && selected.IsUser;
             BtnDeletePreset.IsEnabled = selected != null;
-            BtnResetMarket.IsEnabled = selected != null && selected.Source == "market";
         }
 
         // ── 主人名单：搜索选择，一次填好名字和 wxid ──────────────
@@ -1083,9 +1090,6 @@ namespace WhaleLauncher.Views
         {
             if (_applyingPreset) return;
             if (!(CmbPreset.SelectedItem is PresetItem p)) return;
-            if (p.Id.StartsWith("market-", StringComparison.Ordinal) &&
-                !AppDialog.Confirm(Window.GetWindow(this), "应用此人设会替换人设内容及包内的表达、长度设置，主要联系人账号与密钥不变。是否继续？",
-                    "应用插件人设", okText: "应用")) return;
             if (!await FlushEditsAsync()) return;
             _applyingPreset = true;
             _saveTimer.Stop();
@@ -1158,20 +1162,20 @@ namespace WhaleLauncher.Views
             if (!_loaded) return;
             if (!AppDialog.Confirm(Window.GetWindow(this),
                 promptOnly
-                    ? "只导出自定义补充提示词，不含身份字段和页面开关。安装启用后会出现在人设列表。\n请确认提示词正文不包含个人信息。"
+                    ? "只导出自定义补充提示词，不含身份字段和页面开关。导入后会出现在预设列表。\n请确认提示词正文不包含个人信息。"
                     : "导出当前人设、称呼、别名、顶嘴与交流偏好、颜文字和长度设置。\n不包含主要联系人账号、密钥、聊天记忆或系统权限。\n请检查人设正文及称呼是否写有个人信息。",
                 "打包分享", okText: "继续")) return;
             var title = AppDialog.Prompt(Window.GetWindow(this), "分享包名称", "打包分享",
                 string.IsNullOrWhiteSpace(_currentPresetName) ? TxtName.Text : _currentPresetName);
             if (title == null) return;
-            var author = AppDialog.Prompt(Window.GetWindow(this), "作者昵称（会公开显示）", "打包分享");
+            var author = AppDialog.Prompt(Window.GetWindow(this), "作者昵称（写入包内信息）", "打包分享");
             if (author == null) return;
             var id = AppDialog.Prompt(Window.GetWindow(this), "包 ID：小写字母开头，只用小写字母、数字、短横线，最多 48 位。更新同一包时保持不变。",
                 "打包分享", "persona-" + Guid.NewGuid().ToString("N").Substring(0, 12));
             if (id == null) return;
             var version = AppDialog.Prompt(Window.GetWindow(this), "包版本，更新时提高版本号", "打包分享", "1.0.0");
             if (version == null) return;
-            var file = AppFilePicker.Save("保存人设插件包", ".zip", "persona.zip");
+            var file = AppFilePicker.Save("保存人设包", ".zip", "persona.zip");
             if (file == null) return;
             try
             {
@@ -1181,8 +1185,8 @@ namespace WhaleLauncher.Views
                 if (!result.Ok) { SaveState.Text = Api.Message(result); return; }
                 PersonaPackage.Export(file, result.Prop("persona"), title.Trim(), author.Trim(), id.Trim(), version.Trim(), promptOnly);
                 SaveState.Text = promptOnly
-                    ? "纯提示词包已导出，可本地安装分享或按市场流程投稿"
-                    : "已打包，可本地安装分享；公开上架需市场校验支持完整设置格式";
+                    ? "纯提示词包已导出，可分享给朋友，在「预设管理 → 从文件导入…」使用"
+                    : "已打包，可分享给朋友，在「预设管理 → 从文件导入…」使用";
             }
             catch (Exception ex) { SaveState.Text = "打包失败：" + Api.FriendlyError(ex); }
         }
@@ -1269,15 +1273,31 @@ namespace WhaleLauncher.Views
             PresetSaved.Foreground = (Brush)FindResource("Text");
         }
 
-        private async void OnResetMarket(object sender, RoutedEventArgs e)
+        private async void OnImportPersonaFile(object sender, RoutedEventArgs e)
         {
-            if (!_loaded || CmbPreset.SelectedItem is not PresetItem p || p.Source != "market") return;
-            if (!AppDialog.Confirm(Window.GetWindow(this),
-                "删除这份市场人设的本地修改？当前正在使用的人设不会改变；再次应用预设后才会使用作者版本。此操作不可撤销。",
-                "恢复作者版本", danger: true, okText: "删除本地修改")) return;
-            if (!await FlushEditsAsync()) return;
-            var res = await _sup.SaveConfigurationAsync("/api/persona/preset/reset-market", new { id = p.Id });
-            SaveState.Text = res.Ok ? "已删除本地副本，可重新应用作者版本" : "恢复失败：" + Api.Message(res);
+            if (_applyingPreset) return;
+            var file = AppFilePicker.Open("选择人设包", ".zip");
+            if (file == null) return;
+            try
+            {
+                PresetSaved.Text = "正在导入…";
+                PresetSaved.Foreground = (Brush)FindResource("Text");
+                // 只读本地文件，内核没启动也能先落到 data\personas，启动后列表自然出现。
+                var imported = await Task.Run(() => PersonaPackage.Import(file, _sup.DataDir));
+                await LoadPresetsAsync(imported.Id);
+                var listed = CmbPreset.SelectedItem is PresetItem item
+                    && string.Equals(item.Id, imported.Id, StringComparison.OrdinalIgnoreCase);
+                SaveState.Text = listed
+                    ? "已从文件导入人设「" + imported.Name + "」，点「应用选中预设」后生效"
+                    : "已导入到 data\\personas\\，启动内核后会出现在预设列表里";
+                PresetSaved.Text = "✔ 已导入";
+                PresetSaved.Foreground = (Brush)FindResource("Text");
+            }
+            catch (Exception ex)
+            {
+                PresetSaved.Text = "导入失败：" + Api.FriendlyError(ex);
+                PresetSaved.Foreground = (Brush)FindResource("Bad");
+            }
         }
 
         private async void OnDeletePreset(object sender, RoutedEventArgs e)
@@ -1285,7 +1305,7 @@ namespace WhaleLauncher.Views
             if (!_loaded || !(CmbPreset.SelectedItem is PresetItem p)) return;
             var detail = p.IsUser
                 ? "这是你自己保存的预设，会直接删除文件。"
-                : "内置 / 市场预设只会从列表隐藏，不删除安装目录和插件文件；插件卸载后重新安装会按新文件恢复。";
+                : "内置预设只会从列表隐藏，不删除安装目录里的文件；升级后仍保持隐藏。";
             if (!AppDialog.Confirm(Window.GetWindow(this),
                 $"删除预设「{p.Name}」？\n\n{detail}\n\n正在使用的预设不能删除，请先导入别的人设。",
                 "删除预设", danger: true, okText: "删除")) return;

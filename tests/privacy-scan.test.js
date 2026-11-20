@@ -87,13 +87,13 @@ test('二进制里的调试路径与源码托管链接会被扫出来', () => {
   for(const repo of ['whale_girl','whale_gril'])assert.deepEqual(scanBinaryBuffer(Buffer.from('https://raw.github'+'usercontent.com/Banan1cee/'+repo+'/main/release-manifest.json')),[]);
 });
 
-test('官方 Api 3 目录不误报，其他仓库和相似文件名仍检查', () => {
+test('插件市场目录不再特殊放行，其他仓库和相似文件名仍检查', () => {
   const catalogs = ['index-v3.json', 'index-v4.json', 'index-personas.json'];
   for (const catalog of catalogs) {
     const official = 'https://raw.github' + 'usercontent.com/Banan1cee/whale-girl-plugins/main/' + catalog;
     for (const encoding of ['utf8', 'utf16le']) {
-      assert.deepEqual(scanBinaryBuffer(Buffer.from(official + '\0', encoding)), []);
-      assert.deepEqual(scanBinaryBuffer(Buffer.from(official + '\u0d01下一', encoding)), []);
+      assert.ok(rulesOf(scanBinaryBuffer(Buffer.from(official + '\0', encoding))).includes('源码托管链接（二进制）'));
+      assert.ok(rulesOf(scanBinaryBuffer(Buffer.from(official + '\u0d01下一', encoding))).includes('源码托管链接（二进制）'));
       for (const other of [official + '.private', official + '/private', official + '?private=1', official.replace('/main/', '/secret/'), official.replace('Banan1cee', 'someone')]) {
         assert.ok(rulesOf(scanBinaryBuffer(Buffer.from(other, encoding))).includes('源码托管链接（二进制）'));
       }

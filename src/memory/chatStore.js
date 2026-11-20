@@ -380,7 +380,7 @@ class ChatStore {
       text: String(message.text == null ? '' : message.text).slice(0, 4000),
       ts: at,
     };
-    for (const key of ['msgId', 'addressedToBot', 'mentionedNames', 'inferredTargetNames', 'replyToName', 'replyToUserId', 'error', 'cleanText']) {
+    for (const key of ['msgId', 'addressedToBot', 'mentionedNames', 'inferredTargetNames', 'replyToName', 'replyToUserId', 'error', 'cleanText', 'about', 'scopes']) {
       if (message[key] !== undefined) entry[key] = message[key];
     }
     entry.tokens = messageTokens(entry);

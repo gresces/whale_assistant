@@ -31,27 +31,23 @@ namespace WhaleLauncher
     public partial class MainWindow : Window
     {
         private readonly RuntimeSupervisor _sup;
-        private readonly PluginMarket _pluginMarket;
         private readonly DispatcherTimer _timer;
         private readonly Dictionary<string, UserControl> _pages = new Dictionary<string, UserControl>();
         private bool _busy;
         private bool _refreshing;
         private bool _memoryNoticeChecked;
 
-        // 官网和赞助入口固定在侧栏底部；链接写死，不依赖内核或网络配置，断网时浏览器自行提示。
-        private const string OfficialSite = "https://bot.zyyc.cc/";
-        private const string SponsorPage = "https://afdian.com/a/Banan1ce";
+        // 「在岗」胶囊不是每次刷新都问：10 秒一次够用，也不让内核每分钟多三十个请求。
+        private DateTime _lastOnDutyChip = DateTime.MinValue;
+        private bool _onDutyChipBusy;
 
         private static readonly NavEntry[] NavKeys =
         {
             new NavEntry { Key = "状态", Label = "状态", Icon = "\uE80F" },
-            new NavEntry { Key = "人设", Label = "人设", Icon = "\uE77B" },
-            new NavEntry { Key = "表情包", Label = "表情包", Icon = "\uE76E" },
-            new NavEntry { Key = "朋友圈", Label = "朋友圈", Icon = "\uE722" },
-            new NavEntry { Key = "主动与提醒", Label = "主动与提醒", Icon = "\uE823" },
-            new NavEntry { Key = "微信桥接", Label = "微信桥接", Icon = "\uE8BD" },
-            new NavEntry { Key = "诊断", Label = "诊断", Icon = "\uE90F" },
-            new NavEntry { Key = "插件市场", Label = "插件市场", Icon = "\uE719" },
+            new NavEntry { Key = "聊天", Label = "聊天", Icon = "\uE8BD" },
+            new NavEntry { Key = "分身", Label = "分身", Icon = "\uE77B" },
+            new NavEntry { Key = "微信", Label = "微信", Icon = "\uE8F2" },
+            new NavEntry { Key = "功能", Label = "功能", Icon = "\uE71D" },
             new NavEntry { Key = "设置", Label = "设置", Icon = "\uE713" },
         };
 
@@ -62,7 +58,6 @@ namespace WhaleLauncher
             var dir = AppContext.BaseDirectory.TrimEnd(Path.DirectorySeparatorChar);
             _sup = new RuntimeSupervisor(dir);
             _sup.UpdateBlocked = true;
-            _pluginMarket = new PluginMarket(dir);
 
             // 正式版不该显示成 v4.0-alpha：那会让用户以为自己装的是测试版，
             // 而且强制更新拿这个版本号做比较，后缀只会添乱。
@@ -70,7 +65,6 @@ namespace WhaleLauncher
             VersionText.Text = ver.Length > 0 ? "v" + ver : "v?";
 
             foreach (var k in NavKeys) Nav.Items.Add(k);
-            Nav.Items.Insert(4, new NavEntry { Key = "语音发送", Label = "语音发送", Icon = "\uE720" });
             Nav.SelectedIndex = 0;
 
             _sup.Say("启动器就绪 · " + dir);
@@ -223,7 +217,7 @@ namespace WhaleLauncher
                 text += "· 补进 " + messages + " 条消息 / " + notes + " 条偏好\n";
                 if (skipped > 0) text += "· " + skipped + " 个聊天转换失败，详见 data\\whale.log\n";
                 text += "\n原文件保留在 data\\memory\\legacy\\，不会删除。\n"
-                      + "以后可以在「设置 → 高级 → 旧版记忆」里手动再识别。";
+                      + "以后可以在「设置 → 高级设置 → 其他 → 旧版记忆（3.x）」里手动再识别。";
 
                 AppDialog.Show(this, text, "记忆已导入");
                 await Api.Post(_sup.Url, "/api/memory/import/ack", "{}");
@@ -241,17 +235,10 @@ namespace WhaleLauncher
             return 0;
         }
 
-        private void SetUpdateButton(bool hasUpdate)
-        {
-            BtnUpdate.Content = hasUpdate ? "有新版本" : "检查更新";
-            AutomationProperties.SetName(BtnUpdate, hasUpdate ? "有新版本，立即更新" : "检查更新");
-        }
-
         private async void OnCheckUpdate(object sender, RoutedEventArgs e)
         {
             if (_updating || _checkingUpdates) return;
             _checkingUpdates = true;
-            BtnUpdate.IsEnabled = false;
             StatusLine.Text = "正在检查更新…";
             try
             {
@@ -261,7 +248,6 @@ namespace WhaleLauncher
             }
             finally
             {
-                BtnUpdate.IsEnabled = true;
                 _checkingUpdates = false;
             }
         }
@@ -286,7 +272,6 @@ namespace WhaleLauncher
                 if (allowBlocking) _sup.UpdateBlocked = false;
                 _lastManifest = null;
                 HideToast();
-                SetUpdateButton(false);
                 _statusHoldUntil = DateTime.Now.AddSeconds(8);
                 StatusLine.Text = "检查更新失败：" + ex.Message + "（不影响使用）";
                 _sup.SayWarn("检查更新失败：" + ex.Message);
@@ -316,13 +301,11 @@ namespace WhaleLauncher
                     {
                         // 定时检查不拦人：只在状态行说明，下次启动才真的停用
                         _lastManifest = chk;
-                        SetUpdateButton(chk.HasUpdate);
                         ShowToast("当前版本已停用，请更新到 v" + chk.Manifest.Latest);
                         StatusLine.Text = "当前版本已被停用，下次启动需要更新";
                         return;
                     }
                     _lastManifest = null;
-                    SetUpdateButton(false);
                     ShowKilled(chk);
                     return;
 
@@ -331,13 +314,11 @@ namespace WhaleLauncher
                     {
                         // 运行中不打断，退化成提示
                         _lastManifest = chk;
-                        SetUpdateButton(true);
                         ShowToast("必须更新到 v" + chk.Manifest.Latest);
                         StatusLine.Text = "当前版本需要更新到 v" + chk.Manifest.Latest + "（下次启动生效）";
                         return;
                     }
                     _lastManifest = chk;
-                    SetUpdateButton(true);
                     ShowToast("必须更新到 v" + chk.Manifest.Latest);
                     StatusLine.Text = "当前 v" + chk.Current + " 已停止支持，需要更新到 v" + chk.Manifest.Latest;
                     _ = RunUpdateAsync(chk, askFirst: false);   // 强制态不给「以后再说」
@@ -345,7 +326,6 @@ namespace WhaleLauncher
 
                 case UpdatePolicy.Warn:
                     _lastManifest = chk;
-                    SetUpdateButton(true);
                     ShowToast("已检测到新版本 v" + chk.Manifest.Latest);
                     StatusLine.Text = chk.FromCache
                         ? "发现新版本 v" + chk.Manifest.Latest + "（" + chk.Error + "）"
@@ -356,7 +336,6 @@ namespace WhaleLauncher
                 default:
                     _lastManifest = null;
                     HideToast();
-                    SetUpdateButton(false);
                     StatusLine.Text = chk.Error.Length > 0
                         ? "检查更新失败：" + chk.Error + "（不影响使用）"
                         : "已是最新 v" + (chk.Current.Length > 0 ? chk.Current : "?");
@@ -397,7 +376,6 @@ namespace WhaleLauncher
             }
 
             _updating = true;
-            BtnUpdate.IsEnabled = false;
             ShowUpdateProgress("正在更新…", -1);
             try
             {
@@ -432,7 +410,6 @@ namespace WhaleLauncher
             finally
             {
                 _updating = false;
-                BtnUpdate.IsEnabled = true;
             }
         }
 
@@ -477,8 +454,15 @@ namespace WhaleLauncher
             var dark = Appearance.IsDark;
             if (IconMoon != null)
             {
-                IconMoon.Visibility = dark ? Visibility.Visible : Visibility.Collapsed;
-                IconSun.Visibility = dark ? Visibility.Collapsed : Visibility.Visible;
+                IconMoon.Visibility = !Appearance.IsSystem && dark ? Visibility.Visible : Visibility.Collapsed;
+                IconSun.Visibility = !Appearance.IsSystem && !dark ? Visibility.Visible : Visibility.Collapsed;
+                IconSystem.Visibility = Appearance.IsSystem ? Visibility.Visible : Visibility.Collapsed;
+            }
+            if (BtnTheme != null)
+            {
+                var tip = "主题：" + Appearance.ThemeDescription + " · 点击切换";
+                BtnTheme.ToolTip = tip;
+                AutomationProperties.SetName(BtnTheme, tip);
             }
 
             var bmp = Appearance.LoadBackdrop();
@@ -499,10 +483,10 @@ namespace WhaleLauncher
             }
 
             ApplyTopBarDefaults();
-            if (_appliedTitleTheme != Appearance.Theme)
+            if (_appliedTitleTheme != Appearance.EffectiveTheme)
             {
                 ApplyTitleBar();
-                _appliedTitleTheme = Appearance.Theme;
+                _appliedTitleTheme = Appearance.EffectiveTheme;
             }
         }
 
@@ -521,7 +505,7 @@ namespace WhaleLauncher
         {
             if (TopBar == null) return;
             // 背景图有无会改变顶栏的玻璃厚度，缓存键里带上它，换图 / 清除时才会重刷。
-            var key = Appearance.Theme + "|" + (Appearance.HasBackdrop ? "1" : "0");
+            var key = Appearance.EffectiveTheme + "|" + Appearance.Theme + "|" + (Appearance.HasBackdrop ? "1" : "0");
             if (_appliedTopBarKey == key) return;
             foreach (var k in TopBarKeys)
                 TopBar.Resources[k] = new SolidColorBrush(Appearance.TopBarColor(k));
@@ -532,7 +516,8 @@ namespace WhaleLauncher
 
         private void OnToggleTheme(object sender, RoutedEventArgs e)
         {
-            Appearance.SetTheme(Appearance.IsDark ? "light" : "dark");
+            var label = Appearance.CycleTheme();
+            _sup.Say("主题 → " + label);
         }
 
         private void ApplyTitleBar()
@@ -569,7 +554,7 @@ namespace WhaleLauncher
             ChangeWindowMessageFilterEx(hwnd, 0x004A /* WM_COPYDATA */, MSGFLT_ALLOW, IntPtr.Zero);
 
             ApplyTitleBar();
-            _appliedTitleTheme = Appearance.Theme;
+            _appliedTitleTheme = Appearance.EffectiveTheme;
         }
 
         [DllImport("dwmapi.dll", PreserveSig = true)]
@@ -619,19 +604,19 @@ namespace WhaleLauncher
         {
             switch (key)
             {
-                case "状态": return new StatusPage(_sup);
-                case "人设": return new PersonaPage(_sup);
-                case "表情包": return new StickerPage(_sup);
-                case "语音发送": return new VoiceSendPage(_sup);
-                case "朋友圈": return new MomentsPage(_sup);
-                case "主动与提醒": return new ReminderPage(_sup);
-                case "微信桥接": return new BridgePage(_sup);
+                case "状态": return new StatusPage(_sup, RestartServicesAsync);
+                case "聊天": return new ChatPage(_sup);
+                case "分身": return new SelfPage(_sup);
+                case "微信": return new BridgePage(_sup);
+                case "功能": return new FunctionPage(_sup);
+                case "设置": return new SettingsPage(_sup, SettingsPage.ViewMode.Full, () => OnCheckUpdate(this, null), CreatePage);
+
+                // 诊断不进主导航，只从「设置 → 诊断工具」作为子页打开。
                 case "诊断": return new DiagPage(_sup);
-                case "插件市场": return new PluginMarketPage(_pluginMarket, UpdateManifestService.LocalVersion(_sup.BaseDir), _sup);
-                case "设置": return new SettingsPage(_sup);
-                default:
-                    return new PlaceholderPage(key, "这一页还没做。");
             }
+            // 未知 page key 交给 OnNavChanged 的 catch 兜底成 PlaceholderPage，
+            // 这里不再维持一条永远走不到的默认分支。
+            throw new InvalidOperationException("未知页面：" + key);
         }
 
         private void GoTo(string key)
@@ -644,22 +629,6 @@ namespace WhaleLauncher
 
         private void OnSettings(object sender, RoutedEventArgs e) => GoTo("设置");
 
-        private void OnOpenWebsite(object sender, RoutedEventArgs e) => OpenExternal(OfficialSite, "打开官网失败");
-
-        private void OnOpenSponsor(object sender, RoutedEventArgs e) => OpenExternal(SponsorPage, "打开赞助页面失败");
-
-        private void OpenExternal(string url, string failureTitle)
-        {
-            try
-            {
-                Process.Start(new ProcessStartInfo(url) { UseShellExecute = true });
-            }
-            catch (Exception ex)
-            {
-                AppDialog.Show(this, failureTitle + "：\n" + ex.Message + "\n\n可以手动在浏览器打开：" + url, failureTitle);
-            }
-        }
-
         // ── 顶栏动作 ────────────────────────────────────────────
         private bool AnythingRunning => _sup.NodeRunning || _sup.BridgeRunning;
 
@@ -667,7 +636,7 @@ namespace WhaleLauncher
         {
             if (_busy) return;
             _busy = true;
-            BtnToggle.IsEnabled = BtnRestart.IsEnabled = false;
+            BtnToggle.IsEnabled = false;
             try
             {
                 if (AnythingRunning)
@@ -691,11 +660,14 @@ namespace WhaleLauncher
             }
         }
 
-        private async void OnRestart(object sender, RoutedEventArgs e)
+        private async void OnRestart(object sender, RoutedEventArgs e) => await RestartServicesAsync();
+
+        /// <summary>状态页里的「重启」复用同一套更新闸门和忙碌保护，不另写一条流程。</summary>
+        public async Task RestartServicesAsync()
         {
             if (_busy) return;
             _busy = true;
-            BtnToggle.IsEnabled = BtnRestart.IsEnabled = false;
+            BtnToggle.IsEnabled = false;
             try
             {
                 // 先等启动检查，别先把正在跑的服务停掉再去撞 UpdateBlocked。
@@ -731,9 +703,67 @@ namespace WhaleLauncher
         }
 
         // ── 刷新 ────────────────────────────────────────────────
-        private async Task RefreshAsync()
+        /// <summary>配置里的工作时段可能是分钟数，也可能已经是 HH:mm；顶栏提示两个都认。</summary>
+        private static string ClockText(JsonElement value)
         {
-            if (_refreshing) return;
+            if (value.ValueKind == JsonValueKind.Number && value.TryGetInt32(out var minutes))
+            {
+                minutes = Math.Max(0, Math.Min(24 * 60, minutes));
+                return (minutes / 60).ToString("00") + ":" + (minutes % 60).ToString("00");
+            }
+            return value.ValueKind == JsonValueKind.String ? (value.GetString() ?? "") : "";
+        }
+
+        /// <summary>分身页改过在岗开关后立刻回读一次，不用等下一轮 10 秒轮询。</summary>
+        public void OnDutyStateChanged()
+        {
+            _lastOnDutyChip = DateTime.MinValue;
+            _ = RefreshOnDutyChipAsync(force: true);
+        }
+
+        /// <summary>
+        /// 顶栏只关心「开 / 关」和一句时段说明。旧内核没有 /api/self/on-duty 时静默保持原样，
+        /// 不能因为一个可选接口把启动器状态栏刷成错误。
+        /// </summary>
+        private async Task RefreshOnDutyChipAsync(bool force = false)
+        {
+            if (_onDutyChipBusy) return;
+            if (!force && (DateTime.Now - _lastOnDutyChip).TotalSeconds < 10) return;
+            _onDutyChipBusy = true;
+            _lastOnDutyChip = DateTime.Now;
+            try
+            {
+                var res = await Api.Get(_sup.Url, "/api/self/on-duty", 3);
+                if (!res.Ok)
+                {
+                    // 403 说明这台机器上分身被禁用；404 / 连接失败只是暂时读不到，保留上一次结果。
+                    if (res.StatusCode == 403) ChipOnDuty.Visibility = Visibility.Collapsed;
+                    return;
+                }
+                var state = res.Prop("onDuty");
+                if (state.ValueKind != JsonValueKind.Object) state = res.Prop("state");
+                var root = state.ValueKind == JsonValueKind.Object ? state : res.Root;
+                var enabled = root.ValueKind == JsonValueKind.Object
+                    && root.TryGetProperty("enabled", out var on) && on.ValueKind == JsonValueKind.True;
+                ChipOnDuty.Visibility = enabled ? Visibility.Visible : Visibility.Collapsed;
+                if (!enabled) return;
+                var hours = root.ValueKind == JsonValueKind.Object && root.TryGetProperty("workingHours", out var h)
+                    && h.ValueKind == JsonValueKind.Object ? h : default;
+                var start = ClockText(JsonRead.Prop(hours, "start"));
+                var end = ClockText(JsonRead.Prop(hours, "end"));
+                ChipOnDuty.ToolTip = start.Length > 0 && end.Length > 0
+                    ? "在岗中 · 工作时段 " + start + "–" + end
+                    : "分身正在按对象策略代回消息";
+            }
+            catch
+            {
+                // 状态胶囊失败不影响主界面；下一轮再试
+            }
+            finally { _onDutyChipBusy = false; }
+        }
+
+        private async Task RefreshAsync()
+        {            if (_refreshing) return;
             _refreshing = true;
             try
             {
@@ -767,8 +797,6 @@ namespace WhaleLauncher
                 AutomationProperties.SetName(BtnToggle, toggleLabel);
                 BtnToggle.IsEnabled = !_busy && (ownsProcesses || !s.ExternalNode);
                 BtnToggle.ToolTip = s.ExternalNode && !ownsProcesses ? externalTip : null;
-                BtnRestart.IsEnabled = !_busy && !s.ExternalNode;
-                BtnRestart.ToolTip = s.ExternalNode ? externalTip : "先停内核与桥接，再按固定顺序重启";
 
                 // 内核与端口已经并进顶栏的内核胶囊；这里只说桥接和需要处理的状态
                 var parts = new List<string>();
@@ -780,6 +808,9 @@ namespace WhaleLauncher
                 }
                 if (s.NodeUp && s.NeedsKey && !s.HasKey) parts.Add("还没填 Key");
                 if (s.StFailed > 0) parts.Add($"发送失败 {s.StFailed}");
+                // 在岗胶囊只在开启时出现；内核没起来时先收起，别留一枚过期的状态。
+                if (s.NodeUp) _ = RefreshOnDutyChipAsync();
+                else ChipOnDuty.Visibility = Visibility.Collapsed;
                 // 更新期间这行归更新流程管；检查更新排队、刚提示完的保存 / 失败结果也别马上盖掉
                 if (!_updating) StatusLine.Text = _waitingUpdateGate || DateTime.Now < _statusHoldUntil
                     ? StatusLine.Text

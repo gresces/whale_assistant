@@ -39,11 +39,6 @@ function createRouter(runtime) {
   }
   entries.sort((a, b) => a.order - b.order);
   for (const entry of entries) entry.register(router);
-
-  runtime.pluginApiRoutes = [
-    ...router.routes.map(({ method, path }) => ({ method, path })),
-    ...router.patterns.map(({ regex }) => ({ method: '*', pattern: regex.source })),
-  ];
   return router;
 }
 

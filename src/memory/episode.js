@@ -156,6 +156,8 @@ async function closeEpisode({ chat, chatStore, llm = null, logger = null, now = 
           confidence: Math.min(0.9, Number(fact.confidence) || 0.7),
           source: messageIds[messageIds.length - 1] || '',
           kind: 'fact',
+          about: fact.about === 'self' ? 'self' : 'other',
+          scopes: Array.isArray(fact.scopes) ? fact.scopes : [],
         }, { chatId: chat.chatId, now });
       }
       const personTraits = extracted.traits.filter((t) => !t.uid || t.uid === speaker.uid);

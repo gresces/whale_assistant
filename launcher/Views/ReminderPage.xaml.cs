@@ -26,7 +26,7 @@ namespace WhaleLauncher.Views
     }
 
     /// <summary>提醒列表：只读展示 + 删除（取消）一条提醒。</summary>
-    public partial class ReminderPage : UserControl, IRefreshable
+    public partial class ReminderPage : UserControl, IRefreshable, IEmbeddedPage, ITabStatus
     {
         private readonly RuntimeSupervisor _sup;
         private readonly ConfigSaver _saver;
@@ -35,6 +35,10 @@ namespace WhaleLauncher.Views
         private bool _formsLoaded;   // 表单（提醒规则 / 主动搭话）载入过没有（M30）
         private bool _diaryEnabled;  // 最近一次从服务端读到的日记开关，保存失败时用来回滚界面
         private bool _diarySendToOwner;
+        private string _tabStatus = "提醒关 · 搭话关";
+
+        public string TabStatus => _tabStatus;
+        public event Action TabStatusChanged;
 
         public ReminderPage(RuntimeSupervisor sup)
         {
@@ -42,19 +46,86 @@ namespace WhaleLauncher.Views
             _sup = sup;
             _saver = new ConfigSaver(sup);
 
-            // 所有输入都自动保存：输入框失焦、勾选框点一下就写回；手点「保存」按钮仍然可用。
+            // 所有输入都自动保存：输入框失焦、勾选框点一下就写回；不再需要保存按钮。
             TxtMaxPerDay.LostFocus += async (_, __) => await SaveRulesAsync();
             TxtQuiet.LostFocus += async (_, __) => await SaveRulesAsync();
-            ChkEnabled.Click += async (_, __) => await SaveRulesAsync();
-            ChkDiaryEnabled.Click += async (_, __) => await SaveDiaryAsync();
+            ChkEnabled.Click += async (_, __) => { UpdateDependencies(); await SaveRulesAsync(); };
+            ChkDiaryEnabled.Click += async (_, __) => { UpdateDependencies(); await SaveDiaryAsync(); };
             ChkDiarySend.Click += async (_, __) => await SaveDiaryAsync();
             TxtDiaryTime.LostFocus += async (_, __) => await SaveDiaryAsync();
             foreach (var box in new TextBox[] { TxtCareEvery, TxtCareJitter, TxtCareMax, TxtCareQuiet, TxtCareWindows })
                 box.LostFocus += async (_, __) => await SaveCareAsync();
             foreach (var chk in new[] { ChkCareEnabled, ChkCareOnlyMaster, ChkCareGroups, ChkCareOthers })
-                chk.Click += async (_, __) => await SaveCareAsync();
+                chk.Click += async (_, __) => { UpdateDependencies(); await SaveCareAsync(); };
 
             Loaded += async (_, __) => await RefreshAsync(!_formsLoaded);
+        }
+
+        public bool Embedded
+        {
+            set
+            {
+                if (!value) return;
+                PageHeader.Visibility = Visibility.Collapsed;
+                PageRoot.Margin = new Thickness(0);
+            }
+        }
+
+        public async Task RefreshTabStatusAsync()
+        {
+            try
+            {
+                var reminders = await _sup.ReadConfigurationAsync("/api/reminders");
+                var rulesOn = reminders.Ok && reminders.Prop("rules").ValueKind == JsonValueKind.Object
+                    && JsonRead.Bool(reminders.Prop("rules"), "enabled");
+                var cfg = await _sup.ReadConfigurationAsync("/api/config");
+                var careOn = cfg.Ok && cfg.Prop("config").ValueKind == JsonValueKind.Object
+                    && cfg.Prop("config").TryGetProperty("care", out var care)
+                    && JsonRead.Bool(care, "enabled");
+                SetTabStatus(rulesOn, careOn);
+            }
+            catch { /* 摘要取不到就保持上一次 */ }
+        }
+
+        private void SetTabStatus(bool rulesOn, bool careOn)
+        {
+            _tabStatus = (rulesOn ? "提醒开" : "提醒关") + " · " + (careOn ? "搭话开" : "搭话关");
+            TabStatusChanged?.Invoke();
+        }
+
+        private void SetSaved(TextBlock badge, string text)
+        {
+            if (badge == null) return;
+            badge.Text = text;
+            badge.SetResourceReference(TextBlock.ForegroundProperty, "Dim");
+        }
+
+        private void SetSaveError(TextBlock badge, string text)
+        {
+            if (badge == null) return;
+            badge.Text = text;
+            badge.SetResourceReference(TextBlock.ForegroundProperty, "Bad");
+        }
+
+        /// <summary>总开关关闭时，子项灰掉并解释原因；开着全部恢复。</summary>
+        private void UpdateDependencies()
+        {
+            var diary = ChkDiaryEnabled.IsChecked == true;
+            TxtDiaryTime.IsEnabled = diary;
+            ChkDiarySend.IsEnabled = diary;
+
+            var rules = ChkEnabled.IsChecked == true;
+            TxtMaxPerDay.IsEnabled = rules;
+            TxtQuiet.IsEnabled = rules;
+            ToolTipService.SetShowOnDisabled(TxtMaxPerDay, !rules);
+            TxtMaxPerDay.ToolTip = rules ? null : "先打开「开启提醒」";
+
+            var care = ChkCareEnabled.IsChecked == true;
+            foreach (var box in new Control[] { TxtCareEvery, TxtCareJitter, TxtCareMax, TxtCareQuiet, TxtCareWindows,
+                ChkCareOnlyMaster, ChkCareGroups, ChkCareOthers })
+                box.IsEnabled = care;
+            ToolTipService.SetShowOnDisabled(TxtCareEvery, !care);
+            TxtCareEvery.ToolTip = care ? null : "先打开「开启主动搭话」";
         }
 
         /// <summary>周期刷新（MainWindow 2 秒定时器驱动）：只刷提醒列表和状态行，不动表单（M30）。</summary>
@@ -116,6 +187,8 @@ namespace WhaleLauncher.Views
                 await LoadDiaryAsync(full || !_formsLoaded);
                 if (full || !_formsLoaded) await LoadCareAsync();   // 周期刷新不碰表单，免得覆盖正在编辑的值（M30）
                 _formsLoaded = true;
+                UpdateDependencies();
+                SetTabStatus(ChkEnabled.IsChecked == true, ChkCareEnabled.IsChecked == true);
                 StatusText.Text = "共 " + rows.Count + " 条 · " + DateTime.Now.ToString("HH:mm:ss") + " 刷新";
                 if (!_sup.NodeRunning) StatusText.Text += " · 可保存到本地，启动后生效";
             }
@@ -149,6 +222,7 @@ namespace WhaleLauncher.Views
             }
             DiaryStatus.Text = res.Str("message");
             BtnWriteDiary.IsEnabled = _sup.NodeRunning && res.Str("status") != "running";
+            UpdateDependencies();
         }
 
         private async void OnSaveDiary(object sender, RoutedEventArgs e) => await SaveDiaryAsync();
@@ -162,6 +236,7 @@ namespace WhaleLauncher.Views
             {
                 ChkDiaryEnabled.IsChecked = _diaryEnabled;
                 ChkDiarySend.IsChecked = _diarySendToOwner;
+                SetSaveError(DiaryTitleStatus, "时间格式不对");
                 DiarySettingsStatus.Text = TxtDiaryTime.ErrorText;
                 return;
             }
@@ -178,19 +253,23 @@ namespace WhaleLauncher.Views
                 {
                     _diaryEnabled = ChkDiaryEnabled.IsChecked == true;
                     _diarySendToOwner = ChkDiarySend.IsChecked == true;
-                    DiarySettingsStatus.Text = "日记设置已保存";
+                    SetSaved(DiaryTitleStatus, "已保存 · " + DateTime.Now.ToString("HH:mm"));
+                    DiarySettingsStatus.Text = "";
+                    UpdateDependencies();
                 }
                 else
                 {
                     ChkDiaryEnabled.IsChecked = _diaryEnabled;
                     ChkDiarySend.IsChecked = _diarySendToOwner;
-                    DiarySettingsStatus.Text = "保存失败：" + Api.Message(res);
+                    SetSaveError(DiaryTitleStatus, "保存失败");
+                    DiarySettingsStatus.Text = Api.Message(res);
                 }
             }
             catch (Exception ex)
             {
                 ChkDiaryEnabled.IsChecked = _diaryEnabled;
                 ChkDiarySend.IsChecked = _diarySendToOwner;
+                SetSaveError(DiaryTitleStatus, "保存失败");
                 DiarySettingsStatus.Text = Api.FriendlyError(ex);
             }
         }
@@ -265,12 +344,10 @@ namespace WhaleLauncher.Views
             if (!TxtCareWindows.IsKeyboardFocusWithin)
                 TxtCareWindows.Text = TimeField.NormalizeRangesOrEmpty(JsonRead.Lines(care, "windows"));
             CareStatus.Text = "";
+            UpdateDependencies();
         }
 
         private async void OnSaveCare(object sender, RoutedEventArgs e) => await SaveCareAsync();
-
-        private void OnOpenCarePolicy(object sender, RoutedEventArgs e)
-            => AppDialog.ShowContent("微信发言范围", new ChatPolicyWindow(_sup));
 
         private async Task<bool> SaveCareAsync()
         {
@@ -288,33 +365,29 @@ namespace WhaleLauncher.Views
             var windows = (windowsText ?? "").Split('\n')
                 .Select(x => x.Trim()).Where(x => x.Length > 0).ToList();
 
-            BtnSaveCare.IsEnabled = false;
-            try
+            var res = await _saver.SaveAsync(() => new Dictionary<string, object>
             {
-                var res = await _saver.SaveAsync(() => new Dictionary<string, object>
-                {
-                    ["care.enabled"] = ChkCareEnabled.IsChecked == true,
-                    ["care.onlyMaster"] = ChkCareOnlyMaster.IsChecked == true,
-                    ["care.allowGroups"] = ChkCareGroups.IsChecked == true,
-                    ["care.allowOthers"] = ChkCareOthers.IsChecked == true,
-                    ["care.everyMinutes"] = every,
-                    ["care.jitterMinutes"] = jitter,
-                    ["care.maxPerDay"] = max,
-                    ["care.quietAfterMinutes"] = quiet,
-                    ["care.windows"] = windows
-                });
-                if (!res.Ok)
-                {
-                    CareStatus.Text = "保存失败：" + Api.Message(res);
-                    return false;
-                }
-                CareStatus.Text = "已保存 " + DateTime.Now.ToString("HH:mm:ss");
-                return true;
-            }
-            finally
+                ["care.enabled"] = ChkCareEnabled.IsChecked == true,
+                ["care.onlyMaster"] = ChkCareOnlyMaster.IsChecked == true,
+                ["care.allowGroups"] = ChkCareGroups.IsChecked == true,
+                ["care.allowOthers"] = ChkCareOthers.IsChecked == true,
+                ["care.everyMinutes"] = every,
+                ["care.jitterMinutes"] = jitter,
+                ["care.maxPerDay"] = max,
+                ["care.quietAfterMinutes"] = quiet,
+                ["care.windows"] = windows
+            });
+            if (!res.Ok)
             {
-                BtnSaveCare.IsEnabled = true;
+                SetSaveError(CareTitleStatus, "保存失败");
+                CareStatus.Text = Api.Message(res);
+                return false;
             }
+            SetSaved(CareTitleStatus, "已保存 · " + DateTime.Now.ToString("HH:mm"));
+            CareStatus.Text = "";
+            UpdateDependencies();
+            SetTabStatus(ChkEnabled.IsChecked == true, ChkCareEnabled.IsChecked == true);
+            return true;
         }
 
         private bool IntOr(NumberField field, out int value)
@@ -337,6 +410,7 @@ namespace WhaleLauncher.Views
             if (rules.TryGetProperty("quietAfterMinutes", out var quiet) && quiet.ValueKind == JsonValueKind.Number && !TxtQuiet.IsKeyboardFocusWithin)
                 TxtQuiet.Text = quiet.GetInt32().ToString();
             RulesStatus.Text = "";
+            UpdateDependencies();
         }
 
         private async void OnSaveRules(object sender, RoutedEventArgs e) => await SaveRulesAsync();
@@ -345,37 +419,35 @@ namespace WhaleLauncher.Views
         {
             if (!TxtMaxPerDay.TryRead(out var maxPerDay))
             {
+                SetSaveError(RulesTitleStatus, "数值无效");
                 RulesStatus.Text = TxtMaxPerDay.ErrorText;
                 return false;
             }
             if (!TxtQuiet.TryRead(out var quiet))
             {
+                SetSaveError(RulesTitleStatus, "数值无效");
                 RulesStatus.Text = TxtQuiet.ErrorText;
                 return false;
             }
-            BtnSaveRules.IsEnabled = false;
-            try
+            var res = await _saver.SaveAsync(() => new Dictionary<string, object>
             {
-                var res = await _saver.SaveAsync(() => new Dictionary<string, object>
-                {
-                    ["reminder.enabled"] = ChkEnabled.IsChecked == true,
-                    ["reminder.maxPerDay"] = maxPerDay,
-                    ["reminder.quietAfterMinutes"] = quiet
-                });
-                if (!res.Ok)
-                {
-                    RulesStatus.Text = "保存失败：" + Api.Message(res);
-                    return false;
-                }
-                RulesStatus.Text = "规则已保存 " + DateTime.Now.ToString("HH:mm:ss");
-                _lastLoad = DateTime.MinValue;
-                await RefreshAsync();
-                return true;
-            }
-            finally
+                ["reminder.enabled"] = ChkEnabled.IsChecked == true,
+                ["reminder.maxPerDay"] = maxPerDay,
+                ["reminder.quietAfterMinutes"] = quiet
+            });
+            if (!res.Ok)
             {
-                BtnSaveRules.IsEnabled = true;
+                SetSaveError(RulesTitleStatus, "保存失败");
+                RulesStatus.Text = Api.Message(res);
+                return false;
             }
+            SetSaved(RulesTitleStatus, "已保存 · " + DateTime.Now.ToString("HH:mm"));
+            RulesStatus.Text = "";
+            UpdateDependencies();
+            SetTabStatus(ChkEnabled.IsChecked == true, ChkCareEnabled.IsChecked == true);
+            _lastLoad = DateTime.MinValue;
+            await RefreshAsync();
+            return true;
         }
 
         private void ShowState(string text, bool error)

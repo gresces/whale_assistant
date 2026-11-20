@@ -1,6 +1,6 @@
 {
   "name": "whale-girl-bot",
-  "version": "4.1.8",
+  "version": "5.0.0",
   "updateEpoch": 1,
   "private": false,
   "description": "助手 —— 模块化重构版（CommonJS，零 npm 依赖）",

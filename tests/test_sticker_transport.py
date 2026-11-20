@@ -684,11 +684,13 @@ class BridgeContractTest(unittest.TestCase):
                         force_foreground=Mock(return_value=True),
                         snapshot_win_state=Mock(return_value={'hwnd': 100, 'iconic': False, 'fg': 0}),
                         restore_win_state=Mock(), log_throttled=Mock(),
+                        log=Mock(), safe_id=Mock(return_value='#job'),
                         guarded_sticker_send=Mock(return_value=transport.result('confirmed')),
                         _compat_mod=lambda: SimpleNamespace(pinned_window=lambda: 100),
                         ROOT=str(ROOT), os=os, db=FakeDB(), SEND_STATE={'active': False, 'start': 0},
                         time=SimpleNamespace(time=lambda: 1, sleep=lambda delay: None))
-        bridge_functions({'send_sticker'}, self.env)
+        bridge_functions({'send_sticker', 'send_attachment', '_attachment_root',
+                          '_attachment_note'}, self.env)
         return self.env
 
     def test_bridge_account_rejection_never_binds_or_transports(self):

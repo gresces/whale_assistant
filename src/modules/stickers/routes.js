@@ -33,8 +33,10 @@ module.exports = function register(router) {
     const { config, logger } = runtime;
     const service = runtime.stickerService;
     if (!service) return json(res, 404, { ok: false, error: '表情包功能未开启' });
-    // 关着就当作这个接口不存在：不读盘、不列目录、不给 UI 用
-    service.requireEnabled();
+    // 关着就当作这个接口不存在：不读盘、不列目录、不给 UI 用。
+    // gate 例外：表情包关着但 shareAssets 开着时，桥接仍要靠它判断附件通道是否可用。
+    // pending 同理：通道开着就必须返回 200（列表可能为空），否则桥接轮询会当成接口不存在。
+    if (!['/api/stickers/gate', '/api/stickers/pending'].includes(info.pathname)) service.requireEnabled();
     const generation = service.generation;
     const pathname = info.pathname;
     const method = req.method || 'GET';
@@ -237,7 +239,7 @@ module.exports = function register(router) {
     }
 
     if (pathname === '/api/stickers/pending' && method === 'GET') {
-      return json(res, 200, { ok: true, items: service.pending() });
+      return json(res, 200, { ok: true, items: service.pendingForBridge() });
     }
 
     if (pathname === '/api/stickers/claim' && method === 'POST') {

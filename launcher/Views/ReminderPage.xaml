@@ -3,7 +3,7 @@
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:ui="clr-namespace:WhaleLauncher"
              Background="Transparent">
-    <Grid Margin="28,24,32,20">
+    <Grid x:Name="PageRoot" Margin="24,20,24,20">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto" />
             <RowDefinition Height="Auto" />
@@ -11,223 +11,152 @@
             <RowDefinition Height="Auto" />
         </Grid.RowDefinitions>
 
-        <DockPanel Grid.Row="0" LastChildFill="False">
+        <DockPanel x:Name="PageHeader" Grid.Row="0" LastChildFill="False" Margin="0,0,0,16">
             <StackPanel DockPanel.Dock="Left">
-                <TextBlock Text="主动与提醒" Style="{StaticResource H1}" VerticalAlignment="Center" />
-                <TextBlock Text="日记、定时提醒与主动搭话" Style="{StaticResource Small}" Margin="0,4,0,0" />
+                <TextBlock Text="主动提醒" Style="{StaticResource H1}" VerticalAlignment="Center" />
+                <TextBlock Text="日记、提醒和主动搭话。" Foreground="{DynamicResource Text2}"
+                           FontSize="14" LineHeight="20" Margin="0,4,0,0" />
             </StackPanel>
-            <Button x:Name="BtnRefresh" DockPanel.Dock="Right" Content="⟳ 刷新"
+            <Button x:Name="BtnRefresh" DockPanel.Dock="Right" Content="刷新"
                     Style="{StaticResource Ghost}" HorizontalAlignment="Right" VerticalAlignment="Center" Click="OnRefresh" />
         </DockPanel>
 
-        <TextBlock Grid.Row="1" x:Name="HintText"
-                   Text="到点自动发；发送失败 5 分钟后重试一次；过期的不再补发"
-                   Style="{StaticResource Small}" Margin="0,6,0,10" TextWrapping="Wrap" />
+        <TextBlock Grid.Row="1" x:Name="HintText" Visibility="Collapsed" />
 
-        <!-- 整页一个滚动条：两张规则卡 + 提醒列表都在里面。
-             以前这里没有 ScrollViewer，内容一多就顶出窗口，滚轮也没反应（用户反馈）。 -->
         <ScrollViewer Grid.Row="2" VerticalScrollBarVisibility="Auto"
                       HorizontalScrollBarVisibility="Disabled" FocusVisualStyle="{x:Null}">
-            <StackPanel Margin="0,0,10,0">
+            <StackPanel Margin="0,0,8,0">
 
-                <Border Style="{StaticResource Card}" Padding="0" Margin="0,0,0,12">
-                    <Grid>
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="*" />
-                            <ColumnDefinition Width="240" />
-                        </Grid.ColumnDefinitions>
-
-                        <!-- 左：设置。说明收进一行提示，避免一上来就是一大段文字。 -->
-                        <StackPanel Margin="18,16,16,16">
-                            <Grid>
-                                <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="*" />
-                                    <ColumnDefinition Width="Auto" />
-                                </Grid.ColumnDefinitions>
-                                <StackPanel Orientation="Horizontal">
-                                    <Border Width="3" Height="20" CornerRadius="1.5"
-                                            Background="{DynamicResource Accent}" VerticalAlignment="Center" />
-                                    <StackPanel Margin="10,0,12,0">
-                                        <TextBlock Text="日记" Style="{StaticResource H2}" FontSize="15" />
-                                        <TextBlock Text="把当天的聊天，写成一篇 Markdown 日记" TextWrapping="Wrap"
-                                                   Style="{StaticResource Small}" Margin="0,2,0,0" />
-                                    </StackPanel>
-                                </StackPanel>
-                                <StackPanel Grid.Column="1" VerticalAlignment="Center">
-                                    <CheckBox x:Name="ChkDiaryEnabled" Content="每天自动写" />
-                                    <CheckBox x:Name="ChkDiarySend" Content="写完发给主要联系人" Margin="0,8,0,0" />
-                                </StackPanel>
-                            </Grid>
-
-                            <Border Background="{DynamicResource Surface3}" BorderBrush="{DynamicResource Line}"
-                                    BorderThickness="1" CornerRadius="8" Padding="12,10" Margin="0,14,0,0">
-                                <Grid>
-                                    <Grid.ColumnDefinitions>
-                                        <ColumnDefinition Width="Auto" />
-                                        <ColumnDefinition Width="1" />
-                                        <ColumnDefinition Width="*" />
-                                    </Grid.ColumnDefinitions>
-                                    <StackPanel>
-                                        <TextBlock Text="生成时间" Style="{StaticResource Label}" />
-                                        <StackPanel Orientation="Horizontal" Margin="0,5,0,0">
-                                            <ui:TimeField x:Name="TxtDiaryTime" Text="23:00" Width="84"
-                                                          Mode="Clock" AllowEmpty="False" Label="日记时间" />
-                                            <TextBlock Text="按设置里的时区" Style="{StaticResource Small}"
-                                                       VerticalAlignment="Center" Margin="8,0,0,0" />
-                                        </StackPanel>
-                                    </StackPanel>
-                                    <Border Grid.Column="1" Background="{DynamicResource Line}" Margin="16,2" />
-                                    <StackPanel Grid.Column="2" Margin="16,0,0,0" VerticalAlignment="Center">
-                                        <TextBlock Text="保存位置" Style="{StaticResource Label}" />
-                                        <TextBlock Text="data/diary/年份/月-日.md" Style="{StaticResource Small}"
-                                                   Margin="0,4,0,0" TextTrimming="CharacterEllipsis" />
-                                    </StackPanel>
-                                </Grid>
-                            </Border>
-
-                            <Grid Margin="0,12,0,0">
-                                <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="Auto" />
-                                    <ColumnDefinition Width="*" />
-                                </Grid.ColumnDefinitions>
-                                <Button x:Name="BtnSaveDiary" Content="保存日记设置" Style="{StaticResource Primary}"
-                                        Click="OnSaveDiary" />
-                                <TextBlock x:Name="DiarySettingsStatus" Grid.Column="1" Style="{StaticResource Small}"
-                                           Margin="10,0,0,0" VerticalAlignment="Center" TextWrapping="Wrap" />
-                            </Grid>
-
-                            <TextBlock Style="{StaticResource Small}" Margin="0,10,0,0" TextWrapping="Wrap"
-                                       Text="每天最多一篇；只记录主要联系人私聊；当天已有就跳过；错过时间会补写；失败每 5 分钟重试，最多 3 次。"
-                                       ToolTip="沿用当前人设和聊天模型，只根据当天和主要联系人的聊天素材记录，保存为 Markdown。打开「写完发给主要联系人」后，每篇生成完会把全文交给桥接发送。过去日期不补写，当天没有和主要联系人的聊天不生成。" />
-                        </StackPanel>
-
-                        <!-- 右：状态。用浅色面板和左边设置区分开，按钮放在状态下面。 -->
-                        <Border Grid.Column="1" Background="{DynamicResource Surface3}"
-                                CornerRadius="0,8,8,0" Padding="16,16,18,16">
-                            <Grid>
-                                <Grid.RowDefinitions>
-                                    <RowDefinition Height="Auto" />
-                                    <RowDefinition Height="*" />
-                                    <RowDefinition Height="Auto" />
-                                </Grid.RowDefinitions>
-                                <StackPanel>
-                                    <TextBlock Text="当前状态" Style="{StaticResource Label}" />
-                                    <TextBlock x:Name="DiaryStatus" Text="尚未生成日记"
-                                               Foreground="{DynamicResource Text2}" FontSize="12"
-                                               TextWrapping="Wrap" LineHeight="18" Margin="0,6,0,0" />
-                                </StackPanel>
-                                <StackPanel Grid.Row="2">
-                                    <Border Height="1" Background="{DynamicResource Line}" Margin="0,0,0,12" />
-                                    <StackPanel Orientation="Horizontal">
-                                        <Button x:Name="BtnWriteDiary" Content="立即写一篇" Style="{StaticResource Primary}"
-                                                Click="OnWriteDiary" />
-                                        <Button Content="打开文件夹" Style="{StaticResource Ghost}"
-                                                Margin="8,0,0,0" Click="OnOpenDiary" />
-                                    </StackPanel>
-                                </StackPanel>
-                            </Grid>
-                        </Border>
-                    </Grid>
-                </Border>
-
-                <!-- 提醒规则：字段语义和「主动搭话」一致，但这是提醒自己的配置 -->
+                <!-- 日记：默认只留开关、时间和状态 -->
                 <Border Style="{StaticResource Card}" Padding="16" Margin="0,0,0,12">
                     <StackPanel>
-                        <TextBlock Text="提醒规则" Style="{StaticResource H2}" Margin="0,0,0,6" />
-                        <TextBlock Text="和主动搭话同一套规则语义，但配置独立：当日次数用完、或刚聊过（按下面设置）就不发，也不会推迟补发。提醒不限制时间段 —— 你定几点就几点发。"
-                                   Style="{StaticResource Small}" TextWrapping="Wrap" Margin="0,0,0,10" />
-
-                        <CheckBox x:Name="ChkEnabled" Content="开启提醒" Margin="0,0,0,8" />
-
-                        <Grid Margin="0,0,0,8">
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="*" />
-                                <ColumnDefinition Width="*" />
-                            </Grid.ColumnDefinitions>
-                            <StackPanel Margin="0,0,10,0">
-                                <TextBlock Text="每天最多提醒几次（0 = 不限）" Style="{StaticResource Small}" Margin="0,0,0,4" />
-                                <ui:NumberField x:Name="TxtMaxPerDay" Width="120" HorizontalAlignment="Left"
-                                                Minimum="0" Maximum="200" Fallback="0" Label="每天最多提醒几次" />
+                        <DockPanel LastChildFill="False" Margin="0,0,0,10">
+                            <StackPanel DockPanel.Dock="Left" Orientation="Horizontal">
+                                <TextBlock Text="日记" Style="{StaticResource H2}" VerticalAlignment="Center" />
+                                <TextBlock x:Name="DiaryTitleStatus" Text="自动保存" Style="{StaticResource Small}" Margin="8,0,0,0"
+                                           VerticalAlignment="Center" />
                             </StackPanel>
-                            <StackPanel Grid.Column="1">
-                                <TextBlock Text="刚聊过先跳过（分钟，0 = 不跳过）" Style="{StaticResource Small}" Margin="0,0,0,4" />
-                                <ui:NumberField x:Name="TxtQuiet" Width="120" HorizontalAlignment="Left"
-                                                Minimum="0" Maximum="1440" Fallback="0" Label="刚聊过先跳过" />
-                            </StackPanel>
-                        </Grid>
-
-                        <DockPanel LastChildFill="False">
-                            <Button x:Name="BtnSaveRules" Content="保存规则" Style="{StaticResource Primary}"
-                                    Click="OnSaveRules" DockPanel.Dock="Left" />
-                            <TextBlock x:Name="RulesStatus" Style="{StaticResource Small}" Margin="10,0,0,0"
-                                       VerticalAlignment="Center" TextWrapping="Wrap" DockPanel.Dock="Left" />
+                            <CheckBox x:Name="ChkDiaryEnabled" DockPanel.Dock="Right" Content="每天自动写" VerticalAlignment="Center" />
                         </DockPanel>
+                        <WrapPanel>
+                            <ui:TimeField x:Name="TxtDiaryTime" Text="23:00" Width="84" Mode="Clock" AllowEmpty="False" Label="日记时间" />
+                            <TextBlock x:Name="DiaryStatus" Text="尚未生成日记" Foreground="{DynamicResource Text2}"
+                                       FontSize="14" VerticalAlignment="Center" Margin="16,0,0,0" TextWrapping="Wrap" />
+                        </WrapPanel>
+                        <WrapPanel Margin="0,10,0,0">
+                            <Button x:Name="BtnWriteDiary" Content="立即写一篇" Style="{StaticResource Ghost}" Click="OnWriteDiary" />
+                            <Button Content="打开文件夹" Style="{StaticResource Ghost}" Margin="8,0,0,0" Click="OnOpenDiary" />
+                            <TextBlock x:Name="DiarySettingsStatus" Style="{StaticResource Small}"
+                                       Margin="10,0,0,0" VerticalAlignment="Center" TextWrapping="Wrap" />
+                        </WrapPanel>
                     </StackPanel>
                 </Border>
 
-                <!-- 主动搭话：和提醒同一页，省得在两处来回对规则 -->
+                <!-- 提醒规则：默认只留开关和每日上限 -->
                 <Border Style="{StaticResource Card}" Padding="16" Margin="0,0,0,12">
                     <StackPanel>
-                        <DockPanel LastChildFill="False" Margin="0,0,0,6">
-                            <TextBlock Text="主动搭话" Style="{StaticResource H2}" DockPanel.Dock="Left"
+                        <StackPanel Orientation="Horizontal" Margin="0,0,0,10">
+                            <TextBlock Text="提醒规则" Style="{StaticResource H2}" VerticalAlignment="Center" />
+                            <TextBlock x:Name="RulesTitleStatus" Text="自动保存" Style="{StaticResource Small}" Margin="8,0,0,0"
                                        VerticalAlignment="Center" />
-                            <Button x:Name="BtnCarePolicy" Content="黑白名单" Style="{StaticResource Ghost}"
-                                    DockPanel.Dock="Right" Click="OnOpenCarePolicy"
-                                    ToolTip="独立管理主动搭话白名单和全局发言黑名单" />
-                        </DockPanel>
-                        <TextBlock Text="没聊的时候她自己来一句。判定只在服务端做一次：时间窗、频率、每日上限、白名单、下面三个开关都算在内。"
-                                   Style="{StaticResource Small}" TextWrapping="Wrap" Margin="0,0,0,10" />
-
-                        <CheckBox x:Name="ChkCareEnabled" Content="开启主动搭话" Margin="0,0,0,8" />
-
+                        </StackPanel>
                         <WrapPanel>
-                            <StackPanel Margin="0,0,18,0">
-                                <TextBlock Text="平均间隔（分钟）" Style="{StaticResource Small}" Margin="0,0,0,4" />
-                                <ui:NumberField x:Name="TxtCareEvery" Width="96" HorizontalAlignment="Left"
-                                                Minimum="5" Maximum="1440" Fallback="90" Label="平均间隔" />
-                            </StackPanel>
-                            <StackPanel Margin="0,0,18,0">
-                                <TextBlock Text="间隔浮动（分钟）" Style="{StaticResource Small}" Margin="0,0,0,4" />
-                                <ui:NumberField x:Name="TxtCareJitter" Width="96" HorizontalAlignment="Left"
-                                                Minimum="0" Maximum="180" Fallback="25" Label="间隔浮动" />
-                            </StackPanel>
-                            <StackPanel Margin="0,0,18,0">
-                                <TextBlock Text="每天最多几次（0 = 不限）" Style="{StaticResource Small}" Margin="0,0,0,4" />
-                                <ui:NumberField x:Name="TxtCareMax" Width="96" HorizontalAlignment="Left"
-                                                Minimum="0" Maximum="50" Fallback="0" Label="每天最多几次" />
-                            </StackPanel>
-                            <StackPanel>
-                                <TextBlock Text="刚聊过先跳过（分钟）" Style="{StaticResource Small}" Margin="0,0,0,4" />
-                                <ui:NumberField x:Name="TxtCareQuiet" Width="96" HorizontalAlignment="Left"
-                                                Minimum="0" Maximum="240" Fallback="0" Label="刚聊过先跳过" />
-                            </StackPanel>
-                        </WrapPanel>
-
-                        <TextBlock Text="允许的时间段（每行一个，如 09:00-12:00；跨零点也认；留空 = 默认 09:00-23:00）"
-                                   Style="{StaticResource Small}" Margin="0,10,0,4" />
-                        <ui:TimeField x:Name="TxtCareWindows" Mode="Ranges" AllowEmpty="True" Label="搭话时间段"
-                                      MinHeight="48" TextWrapping="Wrap" AcceptsReturn="True"
-                                      VerticalScrollBarVisibility="Auto" />
-
-                        <WrapPanel Margin="0,10,0,0">
-                            <CheckBox x:Name="ChkCareOnlyMaster" Content="只找主要联系人" Margin="0,0,18,0" />
-                            <CheckBox x:Name="ChkCareGroups" Content="允许在群里主动" Margin="0,0,18,0" />
-                            <CheckBox x:Name="ChkCareOthers" Content="允许主动找别人" />
-                        </WrapPanel>
-
-                        <TextBlock Text="要调整哪些会话允许发言，请到「微信桥接 → 发言范围」。"
-                                   Style="{StaticResource Small}" TextWrapping="Wrap" Margin="0,10,0,4" />
-
-                        <WrapPanel Margin="0,10,0,0">
-                            <Button x:Name="BtnSaveCare" Content="保存主动搭话" Style="{StaticResource Primary}" Click="OnSaveCare" />
-                            <TextBlock x:Name="CareStatus" Style="{StaticResource Small}" Margin="10,0,0,0"
+                            <CheckBox x:Name="ChkEnabled" Content="开启提醒" Margin="0,0,20,0" VerticalAlignment="Center" />
+                            <TextBlock Text="每天最多" Style="{StaticResource Small}" VerticalAlignment="Center" Margin="0,0,6,0" />
+                            <ui:NumberField x:Name="TxtMaxPerDay" Width="90" Minimum="0" Maximum="200" Fallback="0" Label="每天最多提醒几次" />
+                            <TextBlock Text="次（0 = 不限）" Style="{StaticResource Small}" VerticalAlignment="Center" Margin="6,0,16,0" />
+                            <TextBlock x:Name="RulesStatus" Style="{StaticResource Small}" Margin="0,0,0,0"
                                        VerticalAlignment="Center" TextWrapping="Wrap" />
                         </WrapPanel>
                     </StackPanel>
                 </Border>
 
-                <!-- 提醒列表：跟着整页滚，不再自己套一层滚动（嵌套滚动会让滚轮打架） -->
-                <Border Style="{StaticResource Card}" Padding="12" MinHeight="180">
+                <!-- 主动搭话：默认留总开关、平均间隔和时间段 -->
+                <Border Style="{StaticResource Card}" Padding="16" Margin="0,0,0,12">
+                    <StackPanel>
+                        <StackPanel Orientation="Horizontal" Margin="0,0,0,10">
+                            <TextBlock Text="主动搭话" Style="{StaticResource H2}" VerticalAlignment="Center" />
+                            <TextBlock x:Name="CareTitleStatus" Text="自动保存" Style="{StaticResource Small}" Margin="8,0,0,0"
+                                       VerticalAlignment="Center" />
+                        </StackPanel>
+                        <CheckBox x:Name="ChkCareEnabled" Content="开启主动搭话" Margin="0,0,0,10" />
+                        <WrapPanel>
+                            <StackPanel Margin="0,0,16,0">
+                                <TextBlock Text="平均间隔（分钟）" Style="{StaticResource Small}" Margin="0,0,0,4" />
+                                <ui:NumberField x:Name="TxtCareEvery" Width="96" HorizontalAlignment="Left"
+                                                Minimum="5" Maximum="1440" Fallback="90" Label="平均间隔" />
+                            </StackPanel>
+                            <StackPanel>
+                                <TextBlock Text="允许的时间段（如 09:00-12:00）" Style="{StaticResource Small}" Margin="0,0,0,4" />
+                                <ui:TimeField x:Name="TxtCareWindows" Mode="Ranges" AllowEmpty="True" Label="搭话时间段"
+                                              Width="260" MinHeight="34" />
+                            </StackPanel>
+                        </WrapPanel>
+                        <WrapPanel Margin="0,10,0,0">
+                            <TextBlock x:Name="CareStatus" Style="{StaticResource Small}" Margin="0,0,0,0"
+                                       VerticalAlignment="Center" TextWrapping="Wrap" />
+                        </WrapPanel>
+                    </StackPanel>
+                </Border>
+
+                <!-- 一个高级入口收齐低频项 -->
+                <Expander Header="高级" IsExpanded="False" Foreground="{DynamicResource Text}" Margin="0,0,0,12">
+                    <StackPanel Margin="0,8,0,0">
+                        <Border Style="{StaticResource Card}" Padding="16" Margin="0,0,0,12">
+                            <StackPanel>
+                                <TextBlock Text="日记设置" Style="{StaticResource H2}" Margin="0,0,0,8" />
+                                <CheckBox x:Name="ChkDiarySend" Content="写完发给主要联系人" />
+                                <TextBlock Text="保存位置：data/diary/年份/月-日.md" Style="{StaticResource Small}"
+                                           Margin="0,8,0,0" TextTrimming="CharacterEllipsis" />
+                                <TextBlock Text="每天最多一篇；错过时间会补写；失败最多重试 3 次。"
+                                           Style="{StaticResource Small}" TextWrapping="Wrap" Margin="0,6,0,0" />
+                            </StackPanel>
+                        </Border>
+                        <Border Style="{StaticResource Card}" Padding="16" Margin="0,0,0,12">
+                            <StackPanel>
+                                <TextBlock Text="提醒细节" Style="{StaticResource H2}" Margin="0,0,0,8" />
+                                <WrapPanel>
+                                    <TextBlock Text="刚聊过先跳过（分钟）" Style="{StaticResource Small}" VerticalAlignment="Center" Margin="0,0,6,0" />
+                                    <ui:NumberField x:Name="TxtQuiet" Width="90" Minimum="0" Maximum="1440" Fallback="0" Label="刚聊过先跳过" />
+                                </WrapPanel>
+                                <TextBlock Text="当日次数用完或刚聊过就不发，不推迟补发；提醒不受时间段限制。"
+                                           Style="{StaticResource Small}" TextWrapping="Wrap" Margin="0,8,0,0" />
+                            </StackPanel>
+                        </Border>
+                        <Border Style="{StaticResource Card}" Padding="16">
+                            <StackPanel>
+                                <TextBlock Text="主动搭话细节" Style="{StaticResource H2}" Margin="0,0,0,8" />
+                                <WrapPanel>
+                                    <StackPanel Margin="0,0,16,0">
+                                        <TextBlock Text="间隔浮动（分钟）" Style="{StaticResource Small}" Margin="0,0,0,4" />
+                                        <ui:NumberField x:Name="TxtCareJitter" Width="90" HorizontalAlignment="Left"
+                                                        Minimum="0" Maximum="180" Fallback="25" Label="间隔浮动" />
+                                    </StackPanel>
+                                    <StackPanel Margin="0,0,16,0">
+                                        <TextBlock Text="每天最多（0 = 不限）" Style="{StaticResource Small}" Margin="0,0,0,4" />
+                                        <ui:NumberField x:Name="TxtCareMax" Width="90" HorizontalAlignment="Left"
+                                                        Minimum="0" Maximum="50" Fallback="0" Label="每天最多几次" />
+                                    </StackPanel>
+                                    <StackPanel>
+                                        <TextBlock Text="刚聊过先跳过（分钟）" Style="{StaticResource Small}" Margin="0,0,0,4" />
+                                        <ui:NumberField x:Name="TxtCareQuiet" Width="90" HorizontalAlignment="Left"
+                                                        Minimum="0" Maximum="240" Fallback="0" Label="刚聊过先跳过" />
+                                    </StackPanel>
+                                </WrapPanel>
+                                <WrapPanel Margin="0,12,0,0">
+                                    <CheckBox x:Name="ChkCareOnlyMaster" Content="只找主要联系人" Margin="0,0,18,0" />
+                                    <CheckBox x:Name="ChkCareGroups" Content="允许在群里主动" Margin="0,0,18,0" />
+                                    <CheckBox x:Name="ChkCareOthers" Content="允许主动找别人" />
+                                </WrapPanel>
+                                <TextBlock Text="发言范围在「微信 → 发言范围」里调整。"
+                                           Style="{StaticResource Small}" TextWrapping="Wrap" Margin="0,8,0,0" />
+                            </StackPanel>
+                        </Border>
+                    </StackPanel>
+                </Expander>
+
+                <!-- 提醒列表 -->
+                <Border Style="{StaticResource Card}" Padding="12" MinHeight="160">
                     <Grid>
                         <ItemsControl x:Name="ReminderList">
                             <ItemsControl.ItemTemplate>
@@ -243,24 +172,24 @@
 
                                             <StackPanel VerticalAlignment="Top">
                                                 <TextBlock Text="{Binding Time}" Foreground="{DynamicResource Text}"
-                                                           FontSize="13" FontWeight="SemiBold" />
+                                                           FontSize="14" FontWeight="SemiBold" />
                                                 <TextBlock Text="{Binding Status}" Foreground="{Binding StatusBrush}"
-                                                           FontSize="11" Margin="0,4,0,0" />
+                                                           FontSize="12" Margin="0,2,0,0" />
                                             </StackPanel>
 
                                             <StackPanel Grid.Column="1" Margin="12,0,10,0">
                                                 <StackPanel Orientation="Horizontal">
                                                     <TextBlock Text="{Binding Name}" Foreground="{DynamicResource Text}"
-                                                               FontSize="12" FontWeight="SemiBold"
+                                                               FontSize="14" FontWeight="SemiBold"
                                                                TextTrimming="CharacterEllipsis" />
                                                     <TextBlock Text="{Binding Wxid}" Style="{StaticResource Small}"
                                                                Margin="8,0,0,0" VerticalAlignment="Center"
                                                                TextTrimming="CharacterEllipsis" />
                                                 </StackPanel>
                                                 <TextBlock Text="{Binding Text}" Foreground="{DynamicResource Muted}"
-                                                           FontSize="12" TextWrapping="Wrap" Margin="0,4,0,0" />
+                                                           FontSize="13" TextWrapping="Wrap" Margin="0,4,0,0" />
                                                 <TextBlock Text="{Binding Error}" Foreground="{DynamicResource Bad}"
-                                                           FontSize="11" TextWrapping="Wrap" Margin="0,4,0,0"
+                                                           FontSize="12" TextWrapping="Wrap" Margin="0,4,0,0"
                                                            Visibility="{Binding ErrorVisibility}" />
                                             </StackPanel>
 

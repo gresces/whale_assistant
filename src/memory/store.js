@@ -146,6 +146,9 @@ class Store {
       lastSeenAt: card.lastSeenAt,
       count: card.count,
       notes: personCard.activePreferences(card).map(personCard.preferenceToNote),
+      // L2 覆盖项：只对该对象生效，pipeline 在在岗时读取，不写回 L1。
+      overrides: card.overrides || { toneOverride: '', addressAs: '', tabooTopics: [] },
+      threads: personCard.openThreads(card).map((t) => t.text),
       traitCount: personCard.activeTraits(card).length,
       eventCount: personCard.activeEvents(card).length,
       threadCount: personCard.openThreads(card).length,
@@ -231,7 +234,12 @@ class Store {
       const card = this.chatStore.getCard(chat, entry.uid) || this.chatStore.ensurePerson(chat, entry.uid, entry.name);
       const { facts } = extractor.extractSelfFacts(entry.text, { msgId: entry.id, now: entry.ts });
       if (facts.length) {
-        extractor.applyFacts(card, facts, { chatId: chat.chatId, now: entry.ts });
+        extractor.applyFacts(card, facts, {
+          chatId: chat.chatId,
+          now: entry.ts,
+          about: entry.about,
+          scopes: entry.scopes,
+        });
         // 人生事件：即时补一条事件卡
         for (const fact of facts) {
           if (!String(fact.key || '').startsWith('life:')) continue;
@@ -267,7 +275,12 @@ class Store {
         }
         for (const [uid, list] of byUid) {
           const person = this.chatStore.getCard(chat, uid) || this.chatStore.ensurePerson(chat, uid, list[0].name);
-          extractor.applyFacts(person, list, { chatId: chat.chatId, now: entry.ts });
+          extractor.applyFacts(person, list, {
+            chatId: chat.chatId,
+            now: entry.ts,
+            about: (list[0] && list[0].about) || 'other',
+            scopes: list[0] && list[0].scopes,
+          });
           this.chatStore.saveCard(chat, person);
         }
         chat.meta.stats.userMessagesSinceExtract = 0;

@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<assembly manifestVersion="1.0" xmlns="urn:schemas-microsoft-com:asm.v1">
+  <!--
+    ⚠ 仅用于自动化测试和截图，绝不能替换根目录的正式 WhaleLauncher.exe。
+    正式版 app.manifest 是 requireAdministrator：桥接必须和微信同级才能读它的进程。
+    测试构建用 asInvoker，从根上避免每次启动都弹 UAC；代价是这次构建连不上
+    以管理员运行的微信，所以只能跑界面、配置、离线接口这类用例。
+    构建入口：scripts/build-test-launcher.ps1（输出到 artifacts/test-launcher/）。
+  -->
+  <trustInfo xmlns="urn:schemas-microsoft-com:asm.v2">
+    <security>
+      <requestedPrivileges xmlns="urn:schemas-microsoft-com:asm.v3">
+        <requestedExecutionLevel level="asInvoker" uiAccess="false" />
+      </requestedPrivileges>
+    </security>
+  </trustInfo>
+  <application xmlns="urn:schemas-microsoft-com:asm.v3">
+    <windowsSettings>
+      <dpiAware xmlns="http://schemas.microsoft.com/SMI/2005/WindowsSettings">true/pm</dpiAware>
+      <dpiAwareness xmlns="http://schemas.microsoft.com/SMI/2016/WindowsSettings">PerMonitorV2</dpiAwareness>
+      <longPathAware xmlns="http://schemas.microsoft.com/SMI/2016/WindowsSettings">true</longPathAware>
+    </windowsSettings>
+  </application>
+</assembly>

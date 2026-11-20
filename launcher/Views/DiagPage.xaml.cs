@@ -22,7 +22,7 @@ using Microsoft.Win32;
 
 namespace WhaleLauncher.Views
 {
-    public partial class DiagPage : UserControl, IRefreshable
+    public partial class DiagPage : UserControl, IRefreshable, IEmbeddedPage
     {
         private readonly RuntimeSupervisor _sup;
         private readonly DispatcherTimer _timer;
@@ -40,12 +40,10 @@ namespace WhaleLauncher.Views
         {
             InitializeComponent();
             SmoothScroll.Attach(Logs);
-            _sup = sup;
-            CmbTail.SelectedIndex = 0;
+            _sup = sup;            CmbTail.SelectedIndex = 0;
 
             _timer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1.5) };
-            _timer.Tick += (_, __) => RenderLogs();
-            _timer.Start();
+            _timer.Tick += (_, __) => RenderLogs();            _timer.Start();
 
             Unloaded += (_, __) => _timer.Stop();
             Loaded += async (_, __) =>
@@ -53,6 +51,11 @@ namespace WhaleLauncher.Views
                 if (!_timer.IsEnabled) _timer.Start();
                 await RefreshAsync();
             };
+        }
+
+        public bool Embedded
+        {
+            set { if (value) PageRoot.Margin = new Thickness(0); }
         }
 
         public async Task RefreshAsync()
@@ -81,7 +84,7 @@ namespace WhaleLauncher.Views
             var py = Path.Combine(_sup.BaseDir, "runtime", "python", "python.exe");
             AddCheck("桥接在线", s.BrOnline, s.BrOnline
                 ? (s.BrLastSeenSec >= 0 ? $"心跳 {s.BrLastSeenSec} 秒前" : "已连上")
-                : "没心跳：看「微信 · 桥接」页的控制台");
+                : "没心跳：看「微信 → 高级与日志」的控制台");
 
             var sp = Path.Combine(_sup.BaseDir, "runtime", "python", "Lib", "site-packages");
             var pkgCount = 0;
@@ -142,20 +145,18 @@ namespace WhaleLauncher.Views
             row.Children.Add(mark);
 
             var stack = new StackPanel();
-            stack.Children.Add(new TextBlock
-            {
-                Text = name,
-                Foreground = (Brush)FindResource("Text"),
-                FontSize = 12.5
-            });
-            stack.Children.Add(new TextBlock
+            var nameText = new TextBlock { Text = name, FontSize = 13 };
+            nameText.SetResourceReference(TextBlock.ForegroundProperty, "Text");
+            stack.Children.Add(nameText);
+            var detailText = new TextBlock
             {
                 Text = detail,
                 Style = (Style)FindResource("Small"),
-                Foreground = (Brush)FindResource("Muted"),
                 TextWrapping = TextWrapping.Wrap,
                 Margin = new Thickness(0, 2, 0, 0)
-            });
+            };
+            detailText.SetResourceReference(TextBlock.ForegroundProperty, "Muted");
+            stack.Children.Add(detailText);
             Grid.SetColumn(stack, 1);
             row.Children.Add(stack);
 

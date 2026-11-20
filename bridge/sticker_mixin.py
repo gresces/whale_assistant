@@ -63,18 +63,84 @@ class StickerMixin:
         except Exception:
             return False
 
-    def send_sticker(self, path, chat_display_name, chat_username='', generation='', job_id=''):
-        """一次性、无导航的图片粘贴；只能向已在前台打开且聚焦的精确会话发送。"""
-        if not job_id or not self.sticker_gate(generation, job_id):
-            return G.sticker_result('cancelled', 'stickers are disabled or generation expired')
+    def _attachment_root(self, kind):
+        """Approved directory per kind. Files never follow sticker category dirs."""
+        if str(kind or '').strip().lower() == 'file':
+            return G.os.path.join(G.ROOT, 'data', 'share', 'files')
+        current = self.sticker_config_now()
+        directory = ((current or {}).get('sticker') or {}).get('dir') or 'data/stickers'
+        return directory if G.os.path.isabs(directory) else G.os.path.join(G.ROOT, directory)
+
+    def _attachment_note(self, job_id, kind, result, media_type='-', size=0):
+        """只记 id/大小/类型/结果；绝不把路径或文件正文写进日志。"""
+        try:
+            G.log('[attachment] job=%s kind=%s size=%d type=%s result=%s'
+                  % (G.safe_id(job_id), kind, max(0, int(size or 0)), media_type or '-', result))
+        except Exception:
+            pass
+
+    def send_attachment(self, path, chat_display_name, chat_username='', meta=None):
+        """一次性、无导航的附件粘贴；只能向已在前台打开且聚焦的精确会话发送。
+
+        meta: {kind: 'image'|'file', generation, job_id, title, gate?}。缺 kind
+        时按图片处理，保持旧表情包任务的行为与回执语义（不自动重试；草稿
+        状态不确定时不再发送）。
+        """
+        meta = meta if isinstance(meta, dict) else {}
+        kind = 'file' if str(meta.get('kind') or '').strip().lower() == 'file' else 'image'
+        noun = 'attachment' if kind == 'file' else 'sticker'
+        generation = str(meta.get('generation') or '')
+        job_id = str(meta.get('job_id') or '')
+        # meta['title'] 只为兼容内核任务字段而接收：微信文件气泡显示真实文件名，
+        # 改名会破坏路径白名单，所以标题不参与发送内容。
+        custom_gate = meta.get('gate') if callable(meta.get('gate')) else None
+
+        def gate_now():
+            if custom_gate is not None:
+                try:
+                    return bool(custom_gate())
+                except Exception:
+                    return False
+            return self.sticker_gate(generation, job_id)
+
+        if not job_id or not gate_now():
+            return G.sticker_result('cancelled',
+                                    'attachments are disabled or generation expired'
+                                    if kind == 'file' else
+                                    'stickers are disabled or generation expired')
         with self.send_lock, G._SendStateScope(len(str(path or ''))):
-            if not self.sticker_gate(generation, job_id):
-                return G.sticker_result('cancelled', 'stickers are disabled or generation expired')
+            if not gate_now():
+                return G.sticker_result('cancelled',
+                                        'attachments are disabled or generation expired'
+                                        if kind == 'file' else
+                                        'stickers are disabled or generation expired')
+            media_type, media_size = '-', 0
+            if kind == 'file':
+                # 先做只读校验：路径逃逸/链接/超限/类型不符要立刻给出可读原因，
+                # 不必等到账号与窗口闸都通过。传输前还会再校验一次指纹。
+                try:
+                    _real, _fingerprint, media_type, media_size = G.validate_attachment(
+                        path, self._attachment_root('file'))
+                except G.AttachmentError as exc:
+                    self._attachment_note(job_id, kind, 'failed', 'invalid', 0)
+                    return G.sticker_result('failed', str(exc))
+                except Exception:
+                    self._attachment_note(job_id, kind, 'failed', 'invalid', 0)
+                    return G.sticker_result('failed', '附件检查失败：文件不存在、类型不支持或超过大小上限。')
+            else:
+                try:
+                    media_type = (G.os.path.splitext(str(path or ''))[1] or '').lstrip('.').upper() or '-'
+                    media_size = int(G.os.path.getsize(path))
+                except Exception:
+                    media_type, media_size = '-', 0
             if not self.sticker_quarantine_allows(chat_username, chat_display_name):
+                self._attachment_note(job_id, kind, 'failed', media_type, media_size)
                 return G.sticker_result('failed', 'an uncertain attachment draft must be cleared manually before further sends')
             if not self.sticker_activity_allowed(chat_username):
-                return G.sticker_result('failed', 'activity gate rejected the sticker')
-            if not self.account_send_allowed('表情包') or not self.ACCOUNT.get('verified') or (not self.wechat_window_alive()) or (not self.sticker_account_evidence_allowed()):
+                self._attachment_note(job_id, kind, 'failed', media_type, media_size)
+                return G.sticker_result('failed', 'activity gate rejected the %s' % noun)
+            if not self.account_send_allowed('附件' if kind == 'file' else '表情包') or not self.ACCOUNT.get('verified') or (not self.wechat_window_alive()) or (not self.sticker_account_evidence_allowed()):
+                self._attachment_note(job_id, kind, 'failed', media_type, media_size)
                 return G.sticker_result('failed', 'target account window could not be verified')
             hwnd = int(self.ACCOUNT.get('hwnd') or 0)
             snap = None
@@ -101,17 +167,22 @@ class StickerMixin:
                                         % (evidence.get('attempts', 0), evidence.get('visible', False),
                                            evidence.get('iconic', False), evidence.get('sameProcess', False)),
                                         ttl=60)
+                        self._attachment_note(job_id, kind, 'failed', media_type, media_size)
                         return G.sticker_result('failed', 'could not bring the WeChat window to the foreground')
                     G.log_throttled('sticker-foreground', '表情包：微信不在前台，先切过去（发完会把窗口还原）', ttl=120)
             except Exception:
+                self._attachment_note(job_id, kind, 'failed', media_type, media_size)
                 return G.sticker_result('failed', 'foreground safety checks are unavailable')
             try:
                 with self.gui_lock:
                     current_gui = self.gui
                     if current_gui is None:
                         return G.sticker_result('failed', 'window driver is not ready')
-                    if not self.sticker_gate(generation, job_id):
-                        return G.sticker_result('cancelled', 'stickers are disabled or generation expired')
+                    if not gate_now():
+                        return G.sticker_result('cancelled',
+                                                'attachments are disabled or generation expired'
+                                                if kind == 'file' else
+                                                'stickers are disabled or generation expired')
                     try:
                         canonical, aliases = G.resolve_sticker_target(self.db, chat_display_name, chat_username)
                         if not self.send_policy_allows(canonical, chat_display_name):
@@ -120,7 +191,7 @@ class StickerMixin:
                             return G.sticker_result('failed', 'an uncertain attachment draft must be cleared manually before further sends')
                         if not self.sticker_activity_allowed(canonical):
                             return G.sticker_result('failed', 'target or activity gate rejected the sticker')
-                        if not self.sticker_gate(generation, job_id) or not desktop.foreground(hwnd):
+                        if not gate_now() or not desktop.foreground(hwnd):
                             return G.sticker_result('cancelled', 'send gates changed before binding')
                         if not current_gui.use_window(hwnd) or int(current_gui.main_hwnd) != hwnd:
                             return G.sticker_result('failed', 'unable to bind the verified account window')
@@ -145,8 +216,11 @@ class StickerMixin:
                         current = self.sticker_config_now()
                         if current is None:
                             return G.sticker_result('cancelled', 'stickers are disabled')
-                        directory = (current.get('sticker') or {}).get('dir') or 'data/stickers'
-                        directory = directory if G.os.path.isabs(directory) else G.os.path.join(G.ROOT, directory)
+                        if kind == 'file':
+                            directory = self._attachment_root('file')
+                        else:
+                            directory = (current.get('sticker') or {}).get('dir') or 'data/stickers'
+                            directory = directory if G.os.path.isabs(directory) else G.os.path.join(G.ROOT, directory)
 
                         def pinned_account_valid():
                             try:
@@ -156,29 +230,33 @@ class StickerMixin:
                                 return False
 
                         def transaction_gate():
-                            if not self.sticker_gate(generation, job_id):
+                            if not gate_now():
                                 return False
                             if not self.send_policy_allows(canonical, chat_display_name):
                                 return False
                             latest = self.sticker_config_now()
                             if latest is None:
                                 return False
+                            if kind == 'file':
+                                # 资产目录固定，不随表情包分类目录切换；只核对窗口没换号。
+                                return int((latest.get('wechat') or {}).get('windowHwnd') or 0) in (0, hwnd)
                             latest_dir = (latest.get('sticker') or {}).get('dir') or 'data/stickers'
                             latest_dir = latest_dir if G.os.path.isabs(latest_dir) else G.os.path.join(G.ROOT, latest_dir)
                             wanted_hwnd = int((latest.get('wechat') or {}).get('windowHwnd') or 0)
                             return G.os.path.normcase(G.os.path.abspath(latest_dir)) == G.os.path.normcase(G.os.path.abspath(directory)) and wanted_hwnd in (0, hwnd)
                         G.SEND_STATE['start'] = G.time.time()
                         try:
-                            outcome = G.guarded_sticker_send(current_gui, uia, hwnd, aliases, path, directory, self.db, canonical, gate=transaction_gate, account_valid=pinned_account_valid, activity_allowed=lambda: self.sticker_activity_allowed(canonical), desktop=desktop)
+                            outcome = G.guarded_sticker_send(current_gui, uia, hwnd, aliases, path, directory, self.db, canonical, gate=transaction_gate, account_valid=pinned_account_valid, activity_allowed=lambda: self.sticker_activity_allowed(canonical), desktop=desktop, kind=kind)
                             if not isinstance(outcome, dict) or outcome.get('status') not in {'confirmed', 'unconfirmed', 'failed', 'cancelled'}:
                                 raise ValueError('unknown attachment result')
                         except Exception:
                             outcome = G.sticker_result('unconfirmed', 'transport action is uncertain; a draft may remain; do not retry', draft_may_remain=True)
                         if outcome.get('draft_may_remain') or outcome.get('status') == 'unconfirmed':
                             self.sticker_draft_quarantine[canonical] = {'hwnd': hwnd, 'aliases': aliases, 'draft_observed': bool(outcome.get('draft_observed'))}
+                        self._attachment_note(job_id, kind, outcome.get('status') or 'unconfirmed', media_type, media_size)
                         return outcome
                     except Exception:
-                        return G.sticker_result('failed', 'sticker safety checks are unavailable')
+                        return G.sticker_result('failed', '%s safety checks are unavailable' % noun)
             finally:
                 if snap:
                     try:
@@ -187,6 +265,11 @@ class StickerMixin:
                             self.restore_win_state(snap)
                     except Exception:
                         pass
+
+    def send_sticker(self, path, chat_display_name, chat_username='', generation='', job_id=''):
+        """薄封装：旧表情包任务字段（无 kind）继续走图片语义。"""
+        return self.send_attachment(path, chat_display_name, chat_username,
+                                    {'kind': 'image', 'generation': generation, 'job_id': job_id})
 
     def claim_and_send_sticker(self, item, expected_chat='', expected_username=''):
         """Atomic claim precedes every send, including normal webhook stickers.
@@ -207,8 +290,14 @@ class StickerMixin:
             claimed = None
         if not isinstance(claimed, dict):
             return G.sticker_result('failed', 'sticker job was not claimed; nothing was sent')
-        if claimed.get('id') != job_id or claimed.get('generation') != item.get('generation') or claimed.get('status') != 'sending' or (expected_chat and (not expected_username) and (claimed.get('chat') != expected_chat)) or (expected_username and claimed.get('chatUsername') != expected_username):
+        requested_kind = 'file' if str(item.get('kind') or '').strip().lower() == 'file' else 'image'
+        claimed_kind = 'file' if str(claimed.get('kind') or '').strip().lower() == 'file' else 'image'
+        if claimed.get('id') != job_id or claimed.get('generation') != item.get('generation') or claimed.get('status') != 'sending' or claimed_kind != requested_kind or (expected_chat and (not expected_username) and (claimed.get('chat') != expected_chat)) or (expected_username and claimed.get('chatUsername') != expected_username):
             outcome = G.sticker_result('failed', 'claimed job identity did not match the request')
+        elif claimed_kind == 'file':
+            outcome = self.send_attachment(claimed.get('path'), claimed.get('chat') or '', claimed.get('chatUsername') or '',
+                                           {'kind': 'file', 'title': claimed.get('title') or '',
+                                            'generation': claimed.get('generation'), 'job_id': job_id})
         else:
             outcome = self.send_sticker(claimed.get('path'), claimed.get('chat') or '', claimed.get('chatUsername') or '', claimed.get('generation'), job_id)
         if self.sticker_gate(item.get('generation')):

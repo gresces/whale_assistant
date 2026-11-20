@@ -15,7 +15,7 @@ using System.Windows.Threading;
 
 namespace WhaleLauncher.Views
 {
-    public partial class StickerPage : UserControl, IRefreshable
+    public partial class StickerPage : UserControl, IRefreshable, IEmbeddedPage, ITabStatus
     {
         // 格子 120px + DPI 余量。160 时单张解码量比 132 多 47%，肉眼分不出。
         private const int ThumbWidth = 132;
@@ -49,6 +49,10 @@ namespace WhaleLauncher.Views
         private bool _demandDirty;
         private bool _savingDemand;
         private int _demandRevision;
+        private readonly DispatcherTimer _demandSaveTimer;
+        private string _tabStatus = "已关闭";
+        public string TabStatus => _tabStatus;
+        public event Action TabStatusChanged;
         private bool _importingPresets;
         private bool _loaded;
         private readonly SemaphoreSlim _refreshLock = new(1);
@@ -89,7 +93,58 @@ namespace WhaleLauncher.Views
             InitializeComponent();
             _sup = sup;
             TxtDir.TextChanged += (_, __) => { if (!_loading) { _dirDirty = true; _dirRevision++; } };
+            // 频率改成拖动结束即保存：和设置页滑块一样 450ms 防抖，拖一次只写一次。
+            _demandSaveTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(450) };
+            _demandSaveTimer.Tick += async (_, __) =>
+            {
+                _demandSaveTimer.Stop();
+                await SaveDemandAsync();
+            };
             Loaded += async (_, __) => await RefreshAsync();
+        }
+
+        private void ReportTabStatus()
+        {
+            TitleStatus.Text = _tabStatus;
+            TabStatusChanged?.Invoke();
+        }
+
+        public async Task RefreshTabStatusAsync()
+        {
+            if (!_sup.NodeRunning) { _tabStatus = _loaded ? _tabStatus : "已关闭"; ReportTabStatus(); return; }
+            try
+            {
+                var status = await Api.Get(_sup.Url, "/api/stickers/status", 6);
+                if (!status.Ok)
+                {
+                    _tabStatus = "已关闭";
+                }
+                else
+                {
+                    var enabled = status.Bool("enabled");
+                    var count = 0;
+                    var emotions = status.Prop("emotions");
+                    if (emotions.ValueKind == JsonValueKind.Array)
+                        foreach (var emotion in emotions.EnumerateArray())
+                            if (emotion.ValueKind == JsonValueKind.Object
+                                && emotion.TryGetProperty("items", out var items)
+                                && items.ValueKind == JsonValueKind.Array)
+                                count += items.GetArrayLength();
+                    _tabStatus = enabled ? "已启用 · " + count + " 张" : "已关闭";
+                }
+            }
+            catch { _tabStatus = "已关闭"; }
+            ReportTabStatus();
+        }
+
+        public bool Embedded
+        {
+            set
+            {
+                if (!value) return;
+                PageHeader.Visibility = Visibility.Collapsed;
+                PageRoot.Margin = new Thickness(0);
+            }
         }
 
         public async Task RefreshAsync()
@@ -211,7 +266,6 @@ namespace WhaleLauncher.Views
             }
             var frequencyEnabled = view.Enabled;
             SldDemand.IsEnabled = ChkEnsure.IsEnabled = true;
-            BtnSaveDemand.IsEnabled = !_savingDemand;
             BtnImportPresets.IsEnabled = view.Online && frequencyEnabled && !_importingPresets
                 && view.MaintPhase != "running" && view.MaintPhase != "pending";
             DemandHint.Opacity = frequencyEnabled ? 1 : 0.55;
@@ -233,6 +287,8 @@ namespace WhaleLauncher.Views
             // 内容签名：张数 + 每张 id/版本。没变就什么都不做（以前每次都整表重建）
             var signature = _current + "|" + string.Join(",", CurrentItems().Select((i) => i.Id + "@" + i.Version));
             var total = _emotions.Sum((e) => e.Items.Count);
+            _tabStatus = view.Enabled ? "已启用 · " + total + " 张" : "已关闭";
+            UpdateManageState(view.Enabled);
             if (!_loaded || signature != _renderedSignature)
             {
                 _renderedSignature = signature;
@@ -255,6 +311,7 @@ namespace WhaleLauncher.Views
             }
             RenderJobs(status.Prop("jobs"));
             _loaded = true;
+            ReportTabStatus();
             Probe($"LoadCore 完成 在线={view.Online} 取数={tFetch.ElapsedMilliseconds}ms 总计={tLoad.ElapsedMilliseconds}ms 分类={_emotions.Count} 张数={total}");
         }
 
@@ -339,6 +396,7 @@ namespace WhaleLauncher.Views
             DemandHint.Text = e.NewValue >= 99.5
                 ? "100% = 每轮都提醒；只开提醒时模型仍可能不发。要真的每轮都发，请勾选「没写标记也补一张（必发）」。"
                 : "0 = 只靠模型自觉；70% ≈ 一半多轮次提醒；100% = 每轮都提醒。勾选「必发」后，命中轮次即使模型没写标记也会补一张（难过/求助除外）。";
+            if (!_loading && IsLoaded) ScheduleDemandSave();
         }
 
         private void OnEnsureChanged(object sender, RoutedEventArgs e)
@@ -346,16 +404,23 @@ namespace WhaleLauncher.Views
             if (_loading || !IsLoaded) return;
             _demandDirty = true;
             _demandRevision++;
+            ScheduleDemandSave();
         }
 
-        private async void OnSaveDemand(object sender, RoutedEventArgs e)
+        private void ScheduleDemandSave()
         {
-            if (_loading || _savingDemand) return;
+            _demandSaveTimer?.Stop();
+            _demandSaveTimer?.Start();
+        }
+
+        private async Task SaveDemandAsync()
+        {
+            if (_loading || !_demandDirty) return;
+            if (_savingDemand) { ScheduleDemandSave(); return; }
             var revision = _demandRevision;
             var chance = Math.Round(Math.Clamp(SldDemand.Value / 100.0, 0, 1), 2);
             var ensure = ChkEnsure.IsChecked == true;
             _savingDemand = true;
-            BtnSaveDemand.IsEnabled = false;
             try
             {
                 var res = await _sup.PatchConfigurationAsync(new Dictionary<string, object>
@@ -375,7 +440,7 @@ namespace WhaleLauncher.Views
                 if (res.Ok) _nextRefresh = DateTime.UtcNow.AddSeconds(3);
             }
             catch (Exception ex) { SetStatus("保存失败：" + Api.FriendlyError(ex), 8); }
-            finally { _savingDemand = false; BtnSaveDemand.IsEnabled = true; }
+            finally { _savingDemand = false; }
         }
 
         /* ── 页签 ──────────────────────────────────────────────── */
@@ -572,7 +637,7 @@ namespace WhaleLauncher.Views
                 Content = "删",
                 Width = 26,
                 Height = 22,
-                FontSize = 10.5,
+                FontSize = 12,
                 Padding = new Thickness(0),
                 HorizontalAlignment = HorizontalAlignment.Right,
                 VerticalAlignment = VerticalAlignment.Top,
@@ -711,6 +776,27 @@ namespace WhaleLauncher.Views
             if (_sup.NodeRunning && ChkEnabled.IsChecked == true) return true;
             StatusText.Text = "这项操作需要启动内核并启用表情包。也可以直接在分类文件夹管理图片。";
             return false;
+        }
+
+        /// <summary>总开关关闭时只剩「看 + 打开文件夹」，分类/上传/导入都灰掉。</summary>
+        private void UpdateManageState(bool enabled)
+        {
+            var canManage = enabled;
+            SldDemand.IsEnabled = canManage;
+            ChkEnsure.IsEnabled = canManage;
+            TxtNewCat.IsEnabled = canManage;
+            BtnAddCat.IsEnabled = canManage;
+            BtnDelCat.IsEnabled = canManage;
+            BtnUpload.IsEnabled = canManage;
+            if (!canManage) BtnImportPresets.IsEnabled = false;
+            var tip = canManage ? null : "先打开「启用表情包」";
+            ToolTipService.SetShowOnDisabled(BtnAddCat, !canManage);
+            ToolTipService.SetShowOnDisabled(BtnUpload, !canManage);
+            BtnAddCat.ToolTip = tip;
+            BtnUpload.ToolTip = tip;
+            ChkEnsure.ToolTip = canManage
+                ? "命中频率的轮次，模型没写 [[sticker:分类]] 也由程序按语气补一张；难过/求助时不发"
+                : tip;
         }
 
         private async void OnTestSend(object sender, RoutedEventArgs e)

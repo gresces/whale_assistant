@@ -13,7 +13,7 @@ using NAudio.CoreAudioApi;
 
 namespace WhaleLauncher.Views;
 
-public sealed class VoiceSendPage : UserControl
+public sealed class VoiceSendPage : UserControl, IEmbeddedPage, ITabStatus
 {
     readonly CheckBox experimental=new(){Content="启用语音发送（实验性）",IsChecked=false};
     readonly StackPanel panel=new(){Visibility=Visibility.Collapsed};
@@ -28,6 +28,8 @@ public sealed class VoiceSendPage : UserControl
     readonly TextBlock status=new(){TextWrapping=TextWrapping.Wrap};
     readonly TextBlock keyStatus=new(){TextWrapping=TextWrapping.Wrap,Visibility=Visibility.Collapsed},testStatus=new(){TextWrapping=TextWrapping.Wrap,Visibility=Visibility.Collapsed};
     readonly string root,file;
+    Grid pageRoot;
+    StackPanel pageHeader;
     string providerId="breezeblue";
     string keyFile=>SpeechProviders.KeyFile(root,providerId);
     Dictionary<string,SpeechProfile> profiles=new();
@@ -41,6 +43,20 @@ public sealed class VoiceSendPage : UserControl
     bool testing;
     sealed record Device(string Id,string Name){public override string ToString()=>Name;}
 
+    public bool Embedded
+    {
+        set
+        {
+            if (!value) return;
+            pageHeader.Visibility=Visibility.Collapsed;
+            pageRoot.Margin=new Thickness(0);
+        }
+    }
+
+    public string TabStatus => experimental.IsChecked==true ? "已启用" : "实验性功能，未启用";
+    public event Action TabStatusChanged;
+    public Task RefreshTabStatusAsync() { TabStatusChanged?.Invoke(); return Task.CompletedTask; }
+
     public VoiceSendPage(RuntimeSupervisor sup)
     {
         root=sup.BaseDir;file=Path.Combine(root,"data","voice-send.json");
@@ -48,7 +64,8 @@ public sealed class VoiceSendPage : UserControl
         UseLayoutRounding=true;
 
         // 和其它页同一套骨架：固定页头（H1 + 右侧按钮）+ 整页一个滚动条
-        var page=new Grid{Margin=new Thickness(28,24,32,20)};
+        var page=new Grid{Margin=new Thickness(24,20,24,20)};
+        pageRoot=page;
         page.RowDefinitions.Add(new RowDefinition{Height=GridLength.Auto});
         page.RowDefinitions.Add(new RowDefinition{Height=new GridLength(1,GridUnitType.Star)});
 
@@ -59,6 +76,7 @@ public sealed class VoiceSendPage : UserControl
         subtitle.SetResourceReference(StyleProperty,"Small");
         subtitle.Margin=new Thickness(0,4,0,0);
         var titleStack=new StackPanel();
+        pageHeader=titleStack;
         titleStack.Children.Add(title);
         titleStack.Children.Add(subtitle);
         DockPanel.SetDock(titleStack,Dock.Left);header.Children.Add(titleStack);
@@ -85,28 +103,26 @@ public sealed class VoiceSendPage : UserControl
         var gateBody=new StackPanel();gate.Child=gateBody;
         experimental.SetResourceReference(StyleProperty,"DarkCheck");
         gateBody.Children.Add(experimental);
-        gateBody.Children.Add(Note("把正常回复转成语音：按概率自动发，或者响应对方明确要的语音。关掉开关会立刻停止新的语音任务，已经发出去的消息不会撤回。"));
         body.Children.Add(gate);
         body.Children.Add(panel);
 
         panel.Children.Add(VoiceSendGuide.Create(()=>driverButton?.BringIntoView()));
-        Card("回复方式","每条完整回复抽一次，不是「每四条必发一次」；0% 不随机发，只响应明确的语音要求。");
+        Card("回复方式");
         var pair=new Grid{Margin=new Thickness(0,8,0,0)};
         pair.ColumnDefinitions.Add(new ColumnDefinition{Width=new GridLength(150)});
         pair.ColumnDefinitions.Add(new ColumnDefinition{Width=new GridLength(1,GridUnitType.Star)});
         probability.Width=100;probability.HorizontalAlignment=HorizontalAlignment.Left;
+        probability.ToolTip="每条完整回复抽一次；0% 不随机发，只响应明确的语音要求。";
+        synthTimeout.ToolTip="合成超时会改发原始文字；连续两次异常后暂停语音 5 分钟。";
         var chance=Field("随机概率（0～100%）",probability);pair.Children.Add(chance);
         shortcut.ItemsSource=new[]{"Ctrl+Tab","Ctrl+Alt","Alt+=","Ctrl+Shift+F11","F11"};
         shortcut.Width=220;shortcut.HorizontalAlignment=HorizontalAlignment.Left;
         var hotkey=Field("微信录音快捷键",shortcut);Grid.SetColumn(hotkey,1);hotkey.Margin=new Thickness(12,8,0,0);pair.Children.Add(hotkey);
         current.Children.Add(pair);
-        Add("语音合成最长等待（5～90 秒，推荐 20 秒）",synthTimeout);
-        current.Children.Add(Note("合成超时会取消本次请求并改发原始文字；连续两次接口异常后暂停语音 5 分钟，再自动尝试。合成期间其他会话仍可发文字。已经开始录音的消息不会重复补发文字。"));
-        var scopes=new WrapPanel{Margin=new Thickness(0,4,0,0)};
+        Add("语音合成最长等待（5～90 秒，推荐 20 秒）",synthTimeout);        var scopes=new WrapPanel{Margin=new Thickness(0,4,0,0)};
         groups.Margin=new Thickness(0,0,24,0);scopes.Children.Add(groups);scopes.Children.Add(privates);current.Children.Add(scopes);
-        current.Children.Add(Note("快捷键须和微信「发语音」完全一致，教程用的是 Ctrl+Tab；录音和松手由程序完成。"));
 
-        Card("模型与音色","选择语音厂商后填写对应的 Key。各厂商独立保存模型、音色和密钥；合成使用该厂商账户额度。");
+        Card("模型与音色");
         provider.ItemsSource=SpeechProviders.All;
         Add("语音厂商",provider);
         providerHint.SetResourceReference(StyleProperty,"Small");current.Children.Add(providerHint);
@@ -128,11 +144,19 @@ public sealed class VoiceSendPage : UserControl
         var modelBox=Field("语音模型",models);modelBox.Margin=new Thickness(0,0,12,0);voicesGrid.Children.Add(modelBox);
         var voiceBox=Field("回复音色",voices);Grid.SetColumn(voiceBox,1);voicesGrid.Children.Add(voiceBox);
         current.Children.Add(voicesGrid);
-        Add("语气指令（可选）",instructions);
-        var searchRow=new Grid{Margin=new Thickness(0,8,0,0)};
-        searchRow.ColumnDefinitions.Add(new ColumnDefinition{Width=new GridLength(1,GridUnitType.Star)});
-        searchRow.ColumnDefinitions.Add(new ColumnDefinition{Width=GridLength.Auto});
-        var searchBox=Field("搜索其他音色（可选）",search);searchBox.Margin=new Thickness(0,0,12,0);searchRow.Children.Add(searchBox);
+        models.SelectionChanged+=(_,_)=>{if(models.SelectedItem is BreezeSpeech.Choice c)SelectModel(c.Id);};
+        voices.SelectionChanged+=(_,_)=>{if(voices.SelectedItem is BreezeSpeech.Choice c)voice.Text=c.Id;};
+        model.LostKeyboardFocus+=(_,_)=>{SelectModel(model.Text.Trim());BindChoices(models,models.Items.Cast<BreezeSpeech.Choice>().ToArray(),model,false);};
+        voice.LostKeyboardFocus+=(_,_)=>BindChoices(voices,voices.Items.Cast<BreezeSpeech.Choice>().ToArray(),voice,true);
+        search.TextChanged+=(_,_)=>{if(!loading)BindChoices(voices,remoteVoices,voice,true);};
+
+        var advancedExpander=new Expander{Header="高级",IsExpanded=false,Margin=new Thickness(0,12,0,0)};
+        advancedExpander.SetResourceReference(ForegroundProperty,"Text");
+        var advanced=new StackPanel{Margin=new Thickness(0,8,0,0)};
+        advancedExpander.Content=advanced;
+        panel.Children.Add(advancedExpander);
+        AddTo(advanced,"语气指令（可选）",instructions);
+        AddTo(advanced,"搜索其他音色（可选）",search);
         var read=Button("读取模型和音色",async token=>{
             string selectedProvider=providerId;
             string secret=string.IsNullOrWhiteSpace(key.Password)?BreezeSpeech.LoadKey(keyFile):key.Password;
@@ -143,25 +167,17 @@ public sealed class VoiceSendPage : UserControl
             token.ThrowIfCancellationRequested();
             if(model.Text.Trim()!=selectedModel)return;
             remoteVoices=voiceOptions;BindChoices(models,modelOptions,model,false);BindChoices(voices,remoteVoices,voice,true);
-            status.Text="已读取，保留当前选择。预置音色和该账户的自定义音色可在下拉框中选择。";
+            status.Text="已读取，保留当前选择。";
         },null,flat:true);
-        read.VerticalAlignment=VerticalAlignment.Bottom;Grid.SetColumn(read,1);searchRow.Children.Add(read);
-        current.Children.Add(searchRow);
-        models.SelectionChanged+=(_,_)=>{if(models.SelectedItem is BreezeSpeech.Choice c)SelectModel(c.Id);};
-        voices.SelectionChanged+=(_,_)=>{if(voices.SelectedItem is BreezeSpeech.Choice c)voice.Text=c.Id;};
-        model.LostKeyboardFocus+=(_,_)=>{SelectModel(model.Text.Trim());BindChoices(models,models.Items.Cast<BreezeSpeech.Choice>().ToArray(),model,false);};
-        voice.LostKeyboardFocus+=(_,_)=>BindChoices(voices,voices.Items.Cast<BreezeSpeech.Choice>().ToArray(),voice,true);
-        search.TextChanged+=(_,_)=>{if(!loading)BindChoices(voices,remoteVoices,voice,true);};
-        var advanced=new StackPanel{Visibility=Visibility.Collapsed,Margin=new Thickness(0,4,0,0)};
-        current.Children.Add(advanced);
-        current.Children.Add(Button("高级：手动填写模型 / 音色 ID",_=>{advanced.Visibility=advanced.Visibility==Visibility.Visible?Visibility.Collapsed:Visibility.Visible;return Task.CompletedTask;},null,flat:true));
+        read.HorizontalAlignment=HorizontalAlignment.Left;advanced.Children.Add(read);
         AddTo(advanced,"模型 ID",model);AddTo(advanced,"音色 ID",voice);
 
-        Card("声卡与测试","微信麦克风选 CABLE Output，本页播放端选 CABLE Input。录音期间请保持目标微信会话，切换会话会中止。");
+        Card("声卡与测试");
         var deviceRow=new Grid{Margin=new Thickness(0,8,0,0)};
         deviceRow.ColumnDefinitions.Add(new ColumnDefinition{Width=new GridLength(1,GridUnitType.Star)});
         deviceRow.ColumnDefinitions.Add(new ColumnDefinition{Width=GridLength.Auto});
         var deviceBox=Field("虚拟声卡播放端（例如 CABLE Input）",devices);deviceBox.Margin=new Thickness(0,0,12,0);deviceRow.Children.Add(deviceBox);
+        devices.ToolTip="微信麦克风选 CABLE Output；录音期间请保持目标会话。";
         var refresh=Button("刷新声卡",_=>{RefreshDevices();return Task.CompletedTask;},null,flat:true);
         refresh.VerticalAlignment=VerticalAlignment.Bottom;Grid.SetColumn(refresh,1);deviceRow.Children.Add(refresh);
         current.Children.Add(deviceRow);
@@ -180,10 +196,9 @@ public sealed class VoiceSendPage : UserControl
             finally{testing=false;}
         },testStatus,flat:true));
         current.Children.Add(saveRow);
-        current.Children.Add(Note("测试会先保存当前配置，再给文件传输助手发送「"+VoiceSendTest.Text+"」；排队不代表送达，结果未确认时别重复发。"));
         current.Children.Add(testStatus);
 
-        Card("虚拟声卡驱动","运行包只附带官方安装文件；解压、打开启动器和打开实验开关都不会替你安装 Windows 驱动。");
+        Card("虚拟声卡驱动");
         driverButton=Button("安装 VB-CABLE 官方驱动",_=>{
             string exe=Path.Combine(root,"VB-CABLE虚拟声卡","VBCABLE_Setup_x64.exe");
             // 兼容 4.0.4 及更早安装位置（老安装包把它埋在 runtime\vb-cable）
@@ -194,7 +209,6 @@ public sealed class VoiceSendPage : UserControl
             status.Text="完成官方安装并按提示重启后刷新声卡。VB-CABLE 为 VB-Audio Donationware，可向官方捐赠。";
             return Task.CompletedTask;
         });
-        current.Children.Add(Note("VB-CABLE · vb-audio.com/Cable/ · Donationware，可向官方捐赠或购买许可。"));
         current.Children.Add(status);
         foreach(var result in new[]{keyStatus,testStatus,status})
         {
@@ -343,6 +357,7 @@ public sealed class VoiceSendPage : UserControl
             panel.Visibility=saved.Enabled?Visibility.Visible:Visibility.Collapsed;
             AppDialog.Show(Window.GetWindow(this), "实验开关未保存："+ex.Message, "语音发送", danger: true);
         }
+        TabStatusChanged?.Invoke();
     }
     void Write(AutoVoiceSettings settings)
     {
@@ -385,6 +400,7 @@ public sealed class VoiceSendPage : UserControl
         }
         catch{saved=new();experimental.IsChecked=false;panel.Visibility=Visibility.Collapsed;}
         finally{loading=false;}
+        TabStatusChanged?.Invoke();
     }
     void Save()
     {
@@ -399,5 +415,6 @@ public sealed class VoiceSendPage : UserControl
         value.SynthTimeoutSec=seconds;
         Write(value);saved=value;shortcut.Text=hotkey.Label;
         status.Text="已保存，微信录音快捷键："+hotkey.Label+"。关闭实验开关立即停止后续语音任务。";
+        TabStatusChanged?.Invoke();
     }
 }

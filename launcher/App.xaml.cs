@@ -34,7 +34,8 @@ namespace WhaleLauncher
                 if (scale <= 0) scale = 1;
                 var nav = -1;
                 if (e.Args.Length >= 4) int.TryParse(e.Args[3], out nav);
-                _ = PreviewRenderer.RunAsync(e.Args[1], scale, nav);
+                var section = e.Args.Length >= 5 ? e.Args[4] : "";
+                _ = PreviewRenderer.RunAsync(e.Args[1], scale, nav, section);
                 return;
             }
             // 自更新后重启会带 --replace <pid>：等旧实例真的退出，再去抢单实例锁
@@ -54,6 +55,7 @@ namespace WhaleLauncher
             base.OnStartup(e);
             Appearance.Load();
             Appearance.ApplyTheme();
+            Appearance.StartSystemThemeWatch();
             DispatcherUnhandledException += (_, ex) => Crash("UI", ex.Exception);
             AppDomain.CurrentDomain.UnhandledException += (_, ex) => Crash("进程", ex.ExceptionObject as Exception);
             MainWindow = new MainWindow();

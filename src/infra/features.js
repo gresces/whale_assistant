@@ -23,12 +23,6 @@ const REGISTRY = [
     experimental: true,
   },
   {
-    key: 'javascriptPlugins', path: 'features.javascriptPlugins',
-    label: 'JavaScript 插件（实验性，完整系统权限）',
-    desc: '默认关闭。开启后仍须逐个确认插件权限。JavaScript 可访问网络、文件、系统命令及全部主程序 API，只启用信任的作者。关闭会停止受管理的插件进程并取消尚未执行的插件发送任务。',
-    default: false, experimental: true,
-  },
-  {
     key: 'envContext',
     path: 'features.envContext',
     label: '环境信息注入（系统 / 时区 / 所在地）',
@@ -82,6 +76,20 @@ const REGISTRY = [
     path: 'features.styleProfile',
     label: '对话风格画像（本机）',
     desc: '有 data/style-profile.json 时，把对方的句长、语气、标点和常聊话题作为风格参考注入提示词。默认只做本地统计；让模型总结需要用户明确开启。关掉=不加载画像。',
+    default: true,
+  },
+  {
+    key: 'selfModel',
+    path: 'features.selfModel',
+    label: '数字人分身内核',
+    desc: '在岗模式下用 data/self-model.json 的身份、语气和授权信息生成回复。关掉=完全不读分身数据，聊天回到普通助手行为。',
+    default: true,
+  },
+  {
+    key: 'shareAssets',
+    path: 'features.shareAssets',
+    label: '可分享资产（文件 / 图片）',
+    desc: '允许在岗回复末尾用 [[asset:id]] 附一个 data/share/files 里的文件或图片。与表情包共用桥接 gate；关掉=资产标记一律不发。',
     default: true,
   },
   {

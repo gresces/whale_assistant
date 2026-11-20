@@ -9,7 +9,7 @@ using System.Windows.Controls;
 namespace WhaleLauncher.Views;
 
 // 读取只查本地缓存；互动会操作微信窗口，执行后必须由用户在微信里确认。
-public sealed partial class MomentsPage : UserControl
+public sealed partial class MomentsPage : UserControl, IEmbeddedPage, ITabStatus
 {
     static readonly (string Value, string Label)[] Actions = {
         ("like", "点赞"), ("unlike", "取消点赞"), ("comment", "评论"), ("reply", "回复评论"),
@@ -23,6 +23,11 @@ public sealed partial class MomentsPage : UserControl
     int viewGeneration;
     bool loadingPage;
     bool settingsLoaded;
+    bool savingPublish;
+    string tabStatus = "未启用";
+
+    public string TabStatus => tabStatus;
+    public event Action TabStatusChanged;
 
     public MomentsPage(RuntimeSupervisor supervisor)
     {
@@ -35,7 +40,6 @@ public sealed partial class MomentsPage : UserControl
         BtnRead.Click += async (_, _) => await ReadAsync();
         BtnInteract.Click += async (_, _) => await InteractAsync();
         BtnDraft.Click += (_, _) => CopyDraft();
-        BtnSavePublish.Click += async (_, _) => await SavePublishAsync();
         BtnTestPublish.Click += async (_, _) => await TestPublishAsync();
         BtnRefreshPublish.Click += async (_, _) => await LoadPublishAsync();
         BtnPublishHappy.Click += async (_, _) => await OpenPublishFolderAsync("happy");
@@ -58,6 +62,35 @@ public sealed partial class MomentsPage : UserControl
             TxtKeyword.Clear(); TxtUsername.Clear(); TxtPublisher.Clear();
             TxtComment.Clear(); TxtReplyTo.Clear();
         };
+    }
+
+    public bool Embedded
+    {
+        set
+        {
+            if (!value) return;
+            PageHeader.Visibility = Visibility.Collapsed;
+            PageRoot.Margin = new Thickness(0);
+        }
+    }
+
+    public async Task RefreshTabStatusAsync()
+    {
+        try
+        {
+            var res = await sup.ReadConfigurationAsync("/api/moments/publish-settings");
+            if (res.Ok) SetTabStatus(res.Bool("featureEnabled"), res.Bool("enabled"), res.Long("maxPerDay"));
+        }
+        catch { /* 摘要取不到就保持上一次，不影响页面 */ }
+    }
+
+    void SetTabStatus(bool featureEnabled, bool enabled, long maxPerDay)
+    {
+        tabStatus = !featureEnabled ? "未启用"
+            : enabled ? (maxPerDay <= 0 ? "每天不限" : "每天 " + maxPerDay + " 条")
+            : "已启用 · 手动";
+        TitleStatus.Text = tabStatus;
+        TabStatusChanged?.Invoke();
     }
 
     async Task ReadAsync()
@@ -291,13 +324,43 @@ public sealed partial class MomentsPage : UserControl
                 TxtPublishLimit.Text = res.Long("maxPerDay").ToString();
                 publishSettingsLoaded = true;
             }
+            ApplyPublishState();
+            SetTabStatus(res.Bool("featureEnabled"), res.Bool("enabled"), res.Long("maxPerDay"));
             ShowPublishStatus(res);
         }
         finally { if (generation == viewGeneration) BtnRefreshPublish.IsEnabled = true; }
     }
 
+    void ApplyPublishState()
+    {
+        var on = ChkPublishFeature.IsChecked == true;
+        ChkPublish.IsEnabled = on;
+        ChkPublishImage.IsEnabled = on;
+        TxtPublishInterval.IsEnabled = on;
+        TxtPublishLimit.IsEnabled = on;
+        BtnTestPublish.IsEnabled = on;
+        BtnPublishHappy.IsEnabled = on;
+        BtnPublishCute.IsEnabled = on;
+        BtnPublishAngry.IsEnabled = on;
+        ChkAutoLike.IsEnabled = on;
+        ToolTipService.SetShowOnDisabled(ChkAutoLike, !on);
+        ChkAutoLike.ToolTip = on ? "只对积极、非求助的动态判断；每天有上限" : "先启用朋友圈发表";
+    }
+
+    private async void OnPublishToggle(object sender, RoutedEventArgs e)
+    {
+        ApplyPublishState();
+        await SavePublishAsync();
+    }
+
+    private async void OnPublishFieldLostFocus(object sender, RoutedEventArgs e)
+    {
+        await SavePublishAsync();
+    }
+
     async Task SavePublishAsync()
     {
+        if (savingPublish || !publishSettingsLoaded) return;
         if (!double.TryParse(TxtPublishInterval.Text, out var interval) || !double.IsFinite(interval) || interval <= 0
             || !int.TryParse(TxtPublishLimit.Text, out var maxPerDay) || maxPerDay < 0)
         {
@@ -306,19 +369,24 @@ public sealed partial class MomentsPage : UserControl
         }
         var featureEnabled = ChkPublishFeature.IsChecked == true;
         var enabled = featureEnabled && ChkPublish.IsChecked == true;
-        BtnSavePublish.IsEnabled = false;
+        savingPublish = true;
         try
         {
             var res = await sup.SaveConfigurationAsync("/api/moments/publish-settings",
                 new { featureEnabled, enabled, withImage = ChkPublishImage.IsChecked == true, interval, maxPerDay });
-            if (!res.Ok) { PublishStatus.Text = "保存失败：" + Api.Message(res); return; }
+            if (!res.Ok)
+            {
+                PublishStatus.Text = "保存失败：" + Api.Message(res);
+                return;
+            }
             publishSettingsLoaded = true;
             ChkPublish.IsChecked = res.Bool("enabled");
+            SetTabStatus(res.Bool("featureEnabled"), res.Bool("enabled"), res.Long("maxPerDay"));
+            PublishSaveState.Text = "已保存 · " + DateTime.Now.ToString("HH:mm");
             // 保存成功要肉眼可见：只回显策略时用户分不清「点有没有生效」。
-            PublishStatus.Text = "发表设置已保存 · " + DateTime.Now.ToString("HH:mm:ss")
-                + Environment.NewLine + DescribePublishStatus(res);
+            PublishStatus.Text = DescribePublishStatus(res);
         }
-        finally { BtnSavePublish.IsEnabled = true; }
+        finally { savingPublish = false; }
     }
 
     async Task TestPublishAsync()

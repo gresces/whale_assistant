@@ -1,17 +1,63 @@
 'use strict';
 
 const crypto = require('node:crypto');
+const fs = require('node:fs');
 const path = require('node:path');
 const stickers = require('../../adapters/stickers');
+const features = require('../../infra/features');
 const { installPresets } = require('../../adapters/stickerPresets');
 const { describeError, errorMessage } = require('../../infra/errors');
 const { tagId, tagName } = require('../../infra/privacy');
 const probe = require('../../infra/probe');
 const ACTIVE = new Set(['queued', 'reserved', 'sending']);
 const TERMINAL = new Set(['confirmed', 'unconfirmed', 'failed', 'cancelled']);
+// 资产文件走桥接的通用附件通道：只认 data/share/files 下的绝对路径。
+const SHARE_EXTS = new Set(['.pdf', '.docx', '.xlsx', '.txt', '.png', '.jpg', '.jpeg']);
+const SHARE_MAX_BYTES = 20 * 1024 * 1024;
 // status 结果缓存：启动器 2s 拉一次，1.5s 内直接复用上一次扫描结果
 const STATUS_CACHE_MS = 1500;
 function fail(message, statusCode = 400) { return Object.assign(new Error(message), { statusCode }); }
+
+/** data/share/files 的绝对根：桥接侧也用同一路径做白名单。 */
+function shareRoot(config) {
+  return path.resolve((config && config.root) || process.cwd(), 'data', 'share', 'files');
+}
+
+/**
+ * 资产路径校验（入队和 claim 各做一次）。
+ * 桥接要求绝对路径、必须落在 data/share/files、拒绝链接/`..`、普通文件、≤20 MiB、扩展名白名单。
+ */
+function sharedFile(config, input) {
+  const raw = String(input == null ? '' : input);
+  if (!raw || !path.isAbsolute(raw)) return { ok: false, error: '资产路径必须是绝对路径' };
+  const root = shareRoot(config);
+  const file = path.resolve(raw);
+  const rel = path.relative(root, file);
+  if (!rel || rel.startsWith('..') || path.isAbsolute(rel)) {
+    return { ok: false, error: '资产文件不在 data/share/files 内' };
+  }
+  const ext = path.extname(file).toLowerCase();
+  if (!SHARE_EXTS.has(ext)) return { ok: false, error: '资产文件类型不支持（只允许 pdf/docx/xlsx/txt/图片）' };
+  try {
+    const realRoot = fs.realpathSync.native ? fs.realpathSync.native(root) : fs.realpathSync(root);
+    const realFile = fs.realpathSync.native ? fs.realpathSync.native(file) : fs.realpathSync(file);
+    if (realFile !== realRoot && !realFile.startsWith(realRoot + path.sep)) {
+      return { ok: false, error: '资产文件指向了 data/share/files 之外' };
+    }
+    let cur = root;
+    for (const part of rel.split(path.sep)) {
+      cur = path.join(cur, part);
+      if (fs.lstatSync(cur).isSymbolicLink()) return { ok: false, error: '资产文件不能是符号链接或目录联接' };
+    }
+    const info = fs.statSync(file);
+    if (!info.isFile()) return { ok: false, error: '资产路径不是普通文件' };
+    if (info.size <= 0) return { ok: false, error: '资产文件是空的' };
+    if (info.size > SHARE_MAX_BYTES) return { ok: false, error: '资产文件不能超过 20 MiB' };
+    return { ok: true, file };
+  } catch {
+    return { ok: false, error: '资产文件不存在或无法读取' };
+  }
+}
 
 /** Ephemeral, one-shot delivery jobs. Never replay a persisted queue after restart. */
 class StickerService {
@@ -40,13 +86,17 @@ class StickerService {
     this._statusCache = { at: 0, key: '', value: null };
     // 构造函数的契约：**零磁盘 I/O**。这里只把开关状态读进内存，
     // 连 generation 都直接定好（否则 reconcile 会当成「刚被打开」而去排维护）。
-    this.enabled = stickers.isOn(config);
+    this.stickersOn = stickers.isOn(config);
+    this.shareAssets = features.isOn(config, 'shareAssets');
+    // 表情包和可分享资产共用桥接附件通道；任一开启都要能 claim / gate。
+    this.enabled = this.stickersOn || this.shareAssets;
     this.generation = this.enabled ? crypto.randomUUID() : '';
     // 探针：这一行直接量「构造函数里的同步磁盘工作」，也就是 listen 之前被堵住的时长
     const t0 = probe.now();
     this.reconcile();
-    // 总闸关着时一行日志都不许有（既有测试就是这么约定的），所以只在启用时打
-    if (this.enabled) probe.emit(logger, 'info', `构造/reconcile 耗时=${probe.ms(probe.now() - t0)}ms`);
+    // 总闸关着时一行日志都不许有（既有测试就是这么约定的），所以只在表情包启用时打。
+    // shareAssets 单独开启不产生表情包日志。
+    if (this.stickersOn) probe.emit(logger, 'info', `构造/reconcile 耗时=${probe.ms(probe.now() - t0)}ms`);
   }
 
   /**
@@ -166,16 +216,32 @@ class StickerService {
     }
   }
 
+  ensureShareDir() {
+    try {
+      if (!features.isOn(this.config, 'shareAssets')) return false;
+      fs.mkdirSync(shareRoot(this.config), { recursive: true });
+      return true;
+    } catch { return false; }
+  }
+
   reconcile() {
     const t0 = probe.now();
-    const enabled = stickers.isOn(this.config);
-    if (enabled !== this.enabled) {
+    const prevStickersOn = this.stickersOn === true;
+    const prevShareAssets = this.shareAssets === true;
+    this.stickersOn = stickers.isOn(this.config);
+    this.shareAssets = features.isOn(this.config, 'shareAssets');
+    const enabled = this.stickersOn || this.shareAssets;
+    if (enabled !== this.enabled || this.stickersOn !== prevStickersOn || this.shareAssets !== prevShareAssets) {
       // Invalidates fetched/inflight jobs even if the feature is switched off and back on.
       this.generation = crypto.randomUUID();
       this.enabled = enabled;
       this.invalidateStatus();
-      if (!enabled) for (const job of this.jobs.values()) {
-        if (ACTIVE.has(job.status)) {
+      for (const job of this.jobs.values()) {
+        if (!ACTIVE.has(job.status)) continue;
+        // 关的是表情包就只取消表情包任务，关的是资产就只取消资产任务；
+        // 两个都关才全部取消。
+        if (enabled && this.stickersOn && this.shareAssets) continue;
+        if (!enabled || (!this.stickersOn && job.kind !== 'file') || (!this.shareAssets && job.kind === 'file')) {
           job.status = 'cancelled'; job.error = '总开关已关闭，任务已取消';
           this._note(job, 'cancelled');
         }
@@ -184,11 +250,6 @@ class StickerService {
       if (enabled) this.startMaintenance();
     }
     for (const job of this.jobs.values()) {
-      if (job.pluginId && ACTIVE.has(job.status) && !this.pluginAllowed?.(job)) {
-        job.status = job.status === 'sending' ? 'unconfirmed' : 'cancelled';
-        job.error = '插件授权已撤回，未自动重试';
-        this._note(job, job.status);
-      }
       // 卡住的任务 90 秒就释放：以前是 5 分钟，失败一次就把这个会话堵 5 分钟，
       // 用户感觉「25% 概率压根没生效」。
       if (ACTIVE.has(job.status) && this.now() - job.at > 90 * 1000) {
@@ -220,7 +281,22 @@ class StickerService {
     if (cost > 20) probe.emit(this.logger, cost > 200 ? 'warn' : 'debug', `reconcile 耗时=${probe.ms(cost)}ms 启用=${enabled}`);
     return enabled;
   }
-  requireEnabled() { if (!this.reconcile()) throw fail('表情包功能未开启', 404); }
+  /** 表情包 / 资产共用通道是否开启（gate 与资产入队用）。 */
+  requireChannel() {
+    if (!this.reconcile()) throw fail('表情包与可分享资产都未开启', 404);
+    // 桥接启动时的 gate 握手就是「模块初始化」：在这里补 data/share/files，不删已有文件。
+    this.ensureShareDir();
+  }
+  /** 队列里还有资产任务时，即使表情包关着也要能 pending / claim / ack。 */
+  _hasAssetWork() {
+    return [...this.jobs.values()].some((job) => job.kind === 'file');
+  }
+  requireEnabled() {
+    if (!this.reconcile()) throw fail('表情包功能未开启', 404);
+    // 只开了 shareAssets、且队列里还没有资产任务时，表情包接口保持 404，
+    // 与旧版「总闸关着什么都不给」一致；桥接只要拿到 gate 就会按需入队。
+    if (!this.stickersOn && !this._hasAssetWork()) throw fail('表情包功能未开启', 404);
+  }
   add(hit, chat, chatUsername = '', key = '', status = 'queued') {
     if ([...this.jobs.values()].filter((j) => ACTIVE.has(j.status)).length >= 20) throw fail('表情包任务已满，请先等待现有任务结束', 429);
     const job = { id: crypto.randomUUID(), ...hit, chat, chatUsername, key, status, generation: this.generation, at: this.now(), error: '' };
@@ -230,6 +306,19 @@ class StickerService {
   /** 记一条动作账：模型看不见「发出去了」这件事，只能靠这里回读 */
   _note(job, status) {
     if (!this.store || !job || !job.sessionKey) return;
+    // 资产不是表情包：用 title 记账，别让模型以为刚才发的是一张梗图。
+    if (job.kind === 'file') {
+      const title = String(job.title || '文件').slice(0, 200) || '文件';
+      try {
+        if (job.eventTs && typeof this.store.updateEvent === 'function'
+          && this.store.updateEvent(job.sessionKey, job.eventTs, { status })) return;
+        const entry = this.store.appendEvent(job.sessionKey, { type: 'asset', detail: title, status });
+        if (entry) job.eventTs = entry.ts;
+      } catch (err) {
+        this.logger?.warn?.('[asset] 动作账写入失败：' + (err && (err.code || err.message) || err));
+      }
+      return;
+    }
     const name = job.path ? path.basename(job.path) : '';
     // 用中文分类名，别把 cute/x:猫猫 这种内部 key 写进提示词
     const label = stickers.EMOTIONS[job.emotion] || String(job.emotion || '').replace(/^x:/, '');
@@ -250,6 +339,7 @@ class StickerService {
   /** category 由模型在回复里用 [[sticker:分类]] 指定；没给就什么都不发 */
   plan(msg, category = '') {
     if (!this.reconcile()) return null;
+    if (!this.stickersOn) return null;
     if (msg?.platform !== 'wechat' || !msg.chatId) {
       this.logger?.info('[sticker] stage=plan result=skip reason=unsupported_target');
       return null;
@@ -286,6 +376,7 @@ class StickerService {
   }
   enqueue(emotion, chat) {
     this.requireEnabled();
+    if (!this.stickersOn) throw fail('表情包功能未开启', 404);
     emotion = stickers.normalizeEmotion(emotion);
     if (!emotion) throw fail('请选择有效的情绪');
     chat = String(chat || '').trim();
@@ -296,8 +387,39 @@ class StickerService {
     if (!file) throw fail('这一类还没有图片（也没有「通用」图），先往这个分类里拖几张');
     return this.add({ emotion, path: file }, chat);
   }
+
+  /**
+   * 可分享资产入队：桥接的通用附件通道要求绝对路径 + data/share/files 白名单。
+   * 这里只做入队校验，claim 时会再验一次（文件可能刚被删/替换）。
+   */
+  enqueueAsset({ path: file, title = '', chat = '', chatUsername = '', key = '' } = {}) {
+    if (!features.isOn(this.config, 'shareAssets')) throw fail('可分享资产功能未开启', 404);
+    this.requireChannel();
+    this.ensureShareDir();
+    const checked = sharedFile(this.config, file);
+    if (!checked.ok) throw fail(checked.error);
+    chat = String(chat || '').trim();
+    if (!chat || chat.length > 160 || /[\r\n\x00-\x1f]/.test(chat)) throw fail('请输入明确的目标会话名称');
+    const existing = [...this.jobs.values()].find((j) => ACTIVE.has(j.status) && j.kind === 'file'
+      && (j.chat === chat || (chatUsername && j.chatUsername === chatUsername)));
+    if (existing) return { ...existing, deduplicated: true };
+    const label = String(title || '文件').trim().slice(0, 60) || '文件';
+    const added = this.add({ kind: 'file', title: label, path: checked.file }, chat, chatUsername, key, 'queued');
+    const stored = this.jobs.get(added.id);
+    if (stored) {
+      stored.sessionKey = key || (chatUsername ? `wechat:u:${chatUsername}` : '');
+      this._note(stored, 'queued');
+    }
+    this.logger?.info(`[asset] stage=enqueue result=queued job=${added.id} size=${fs.statSync(checked.file).size}`);
+    return { ...added };
+  }
   pending() {
     this.requireEnabled();
+    return [...this.jobs.values()].filter((j) => j.status === 'queued').map((j) => ({ ...j }));
+  }
+  /** 桥接轮询用：表情包关着但 shareAssets 开着时也要返回 200（列表可能为空）。 */
+  pendingForBridge() {
+    this.requireChannel();
     return [...this.jobs.values()].filter((j) => j.status === 'queued').map((j) => ({ ...j }));
   }
   claim(id) {
@@ -305,11 +427,17 @@ class StickerService {
     const job = this.jobs.get(String(id || ''));
     if (!job) throw fail('找不到这个任务', 404);
     if (!['queued', 'reserved'].includes(job.status) || job.generation !== this.generation) throw fail('任务已领取、取消或过期，不能重复发送', 409);
-    if (!stickers.regularFile(job.path, stickers.stickerDir(this.config, this.config.root))) {
+    if (job.kind === 'file') {
+      const checked = sharedFile(this.config, job.path);
+      if (!checked.ok) {
+        job.status = 'failed'; job.error = checked.error; this._note(job, 'failed'); throw fail(job.error);
+      }
+      job.path = checked.file;
+    } else if (!stickers.regularFile(job.path, stickers.stickerDir(this.config, this.config.root))) {
       job.status = 'failed'; job.error = '表情包文件已删除或不安全'; this._note(job, 'failed'); throw fail(job.error);
     }
     job.status = 'sending';
-    this.logger?.info('[sticker] stage=claim result=sending job=' + job.id);
+    this.logger?.info('[sticker] stage=claim result=sending job=' + job.id + (job.kind === 'file' ? ' kind=file' : ''));
     return { ...job };
   }
   cancelReserved(id, generation, chatUsername) {
@@ -352,8 +480,10 @@ class StickerService {
     return { ...job };
   }
   gate(id = '') {
-    this.requireEnabled();
+    // 桥接共用 gate：表情包或可分享资产任一开启都算启用。
+    this.requireChannel();
     return { ok: true, enabled: true, generation: this.generation,
+      stickerEnabled: this.stickersOn, shareAssets: this.shareAssets,
       jobs: [...this.jobs.values()].filter(j => ACTIVE.has(j.status) && (!id || j.id === id))
         .map(({ id, status, generation }) => ({ id, status, generation })) };
   }
@@ -364,8 +494,11 @@ class StickerService {
     if (queueOnly) return { ok: true, ...queue };
     const dir = stickers.stickerDir(this.config, this.config.root);
     // 用户手滑删了「开心」文件夹：读状态时顺手补回来（只 stat / mkdir，不扫库）
-    this.restoreBuiltinDirs();
-    this.ensureDiscovered();   // 自建目录自动登记（3 秒节流，只读一次顶层目录）
+    // 只有表情包总闸开着才碰表情包库；shareAssets 单独开启时不要凭空建分类目录。
+    if (this.stickersOn) {
+      this.restoreBuiltinDirs();
+      this.ensureDiscovered();   // 自建目录自动登记（3 秒节流，只读一次顶层目录）
+    }
     const list = (key, label, extra) => {
       // items 带上 path / version：启动器直接用 HTTP 就能画缩略图，
       // 不用再为每次刷新 spawn 一个 node 子进程（实测 630ms/次）
@@ -409,8 +542,10 @@ class StickerService {
       probe.emit(this.logger, 'debug', `status(异步) 命中缓存 RTT=${probe.ms(probe.now() - t0)}ms`);
       return hit;
     }
-    this.restoreBuiltinDirs();
-    this.ensureDiscovered();   // 自建目录自动登记（3 秒节流）
+    if (this.stickersOn) {
+      this.restoreBuiltinDirs();
+      this.ensureDiscovered();   // 自建目录自动登记（3 秒节流）
+    }
     const build = async (key, label, extra) => {
       const items = await stickers.categoryItemsAsync(dir, key);
       return { key, label, extra: Boolean(extra), files: items.map((item) => item.name), items,
@@ -489,8 +624,8 @@ class StickerService {
       maintenance: { ...this.maintenance, errors: this.maintenance.errors.slice(0, 5) },
       jobs: [...this.jobs.values()].filter((j) => ACTIVE.has(j.status))
         .concat([...this.jobs.values()].filter((j) => !ACTIVE.has(j.status)).slice(-20).reverse())
-        .map(({ id, status, error, chat, emotion, path: file }) =>
-        ({ id, status, error, chat, emotion, filename: path.basename(file) })) };
+        .map(({ id, status, error, chat, emotion, kind, title, path: file }) =>
+        ({ id, status, error, chat, emotion, kind: kind || '', title: title || '', filename: path.basename(file) })) };
   }
 }
 module.exports = { StickerService };

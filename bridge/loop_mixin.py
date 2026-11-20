@@ -493,7 +493,7 @@ class LoopMixin:
             G.REMINDER_RUNNER = G.start_reminder_watch(
                 http=G.LOCAL_HTTP, base=base, token=self.token,
                 send_text=self.send_text, send_at=self.send_at,
-                send_voice=self.send_voice_reply, display_name=self.display_name, log=G.log)
+                display_name=self.display_name, log=G.log)
             G.log('提醒调度已启动（到点准点发）')
             return G.REMINDER_RUNNER
         except Exception as e:

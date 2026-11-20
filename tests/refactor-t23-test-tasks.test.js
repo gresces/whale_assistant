@@ -47,7 +47,7 @@ test('local and CI use the same ordered required tasks, including every C# proje
   assert.match(local, /scripts[\\/]test-tasks\.js/);
   assert.doesNotMatch(local, /function Step\(/);
   for (const project of ['tests/launcher/UpdateChecks/UpdateChecks.csproj',
-    'tests/voice-send/VoiceSendChecks.csproj', 'tests/plugin-market/Checks.csproj',
+    'tests/voice-send/VoiceSendChecks.csproj',
     'tests/launcher/Checks/Checks.csproj']) {
     assert.ok(plan.tasks.some((t) => (t.projects || []).includes(project)), project);
   }

@@ -126,6 +126,24 @@ test('成功回执后不再是待发', (t) => {
   assert.equal(svc.nextDueAt(), 0);
 });
 
+test('delivery：按 id 返回提醒回执，找不到返回 null', (t) => {
+  const { config } = fixture(t);
+  const clock = { ms: NOW.getTime() };
+  const svc = serviceAt(config, clock);
+  const item = svc.enqueueNow({ wxid: 'wxid_master', text: '待确认回复', kind: 'onDuty' });
+  assert.deepEqual(svc.delivery(item.id), { status: 'pending', error: '', finishedAt: 0 });
+  assert.equal(svc.delivery('missing-id'), null);
+
+  clock.ms += 1000;
+  const due = svc.due();
+  assert.equal(due.length, 1);
+  svc.ack(due[0].id, { ok: true });
+  const receipt = svc.delivery(item.id);
+  assert.equal(receipt.status, 'done');
+  assert.equal(receipt.error, '');
+  assert.ok(receipt.finishedAt > 0);
+});
+
 test('重启扫描：过了提醒时间 + 5 分钟的一律标过期，不再补发', (t) => {
   const { config } = fixture(t);
   const clock = { ms: NOW.getTime() };

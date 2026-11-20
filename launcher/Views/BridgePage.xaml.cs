@@ -245,6 +245,13 @@ namespace WhaleLauncher.Views
 
             var s = await _sup.ProbeAsync();
             _status = s;
+            PageHint.Text = !s.NodeUp
+                ? "内核未启动。"
+                : !s.BrOnline
+                    ? "桥接离线。"
+                    : s.BrAccountOk
+                        ? "桥接在线 · 微信已登录。"
+                        : "桥接在线 · 账号待确认。";
             UpdatePerm(s);
             UpdateStat();
             if (!_configLoaded) await LoadConfigAsync();
@@ -336,6 +343,9 @@ namespace WhaleLauncher.Views
 
             Accounts.ItemsSource = cards;
             AccountsEmpty.Visibility = cards.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+            AccountState.Text = s.BrOnline && s.BrAccountOk
+                ? "已登录"
+                : cards.Count > 0 ? "未登录 · " + cards.Count + " 个账号" : "未登录";
             AccountHint.Text = cards.Count == 0
                 ? ""
                 : (string.IsNullOrEmpty(wanted) ? "没固定账号 · 现在按最近活跃自动认" : "点一下卡片就切到这个号");

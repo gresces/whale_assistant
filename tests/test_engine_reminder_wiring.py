@@ -109,7 +109,6 @@ class ActualRuntimeReminderTests(unittest.TestCase):
         self.runtime.display_name = Mock(return_value='fixture-chat')
         self.runtime.send_text = Mock(return_value=True)
         self.runtime.send_at = Mock(return_value=True)
-        self.runtime.send_voice_reply = Mock(return_value=True)
 
     def load(self, name, path):
         spec = importlib.util.spec_from_file_location(name, path)
@@ -193,23 +192,6 @@ class ActualRuntimeReminderTests(unittest.TestCase):
         self.assertEqual(self.runtime.send_text.call_count, 2)
         self.assertEqual(self.http.post.call_count, 2)
         self.assertTrue(any('回执' in str(call.args) for call in self.engine.log.call_args_list))
-
-    def test_plugin_text_permission_and_revocation_still_block_send(self):
-        runner = self.assemble(self.item(kind='plugin', chatType='private'))
-        self.http.post.side_effect = lambda url, **kw: self.response({'ok': not url.endswith('/permission')})
-        self.assertEqual(runner.step()[0], 0)
-        self.runtime.send_text.assert_not_called()
-        self.runtime.send_at.assert_not_called()
-        self.runtime.send_voice_reply.assert_not_called()
-
-    def test_plugin_voice_keeps_permission_recheck_during_preparation(self):
-        runner = self.assemble(self.item(kind='plugin', delivery='voice'))
-        self.assertEqual(runner.step()[0], 1)
-        self.runtime.send_voice_reply.assert_called_once()
-        self.runtime.send_text.assert_not_called()
-        cancelled = self.runtime.send_voice_reply.call_args.kwargs['cancelled']
-        self.http.post.return_value = self.response({'ok': False})
-        self.assertTrue(cancelled())
 
     def test_shutdown_uses_the_actual_retained_runner(self):
         runner = self.assemble()

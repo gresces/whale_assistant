@@ -95,12 +95,6 @@ module.exports = function register(router) {
     });
   });
 
-  router.post('/api/persona/preset/reset-market', async (runtime, req, res) => {
-    const body = await readBody(req);
-    const result = presets.resetMarketCopy(runtime.config, body && body.id);
-    return json(res, result.ok ? 200 : 400, result);
-  });
-
   // 另存为 / 更新自建预设
   router.post('/api/persona/preset/save', async (runtime, req, res) => {
     const body = await readBody(req);
@@ -108,7 +102,7 @@ module.exports = function register(router) {
     return json(res, result && result.ok ? 200 : 400, result);
   });
 
-  // 删除预设：自建物理删，内置/市场隐藏；正在使用的不许删
+  // 删除预设：自建物理删，内置隐藏；正在使用的不许删
   router.post('/api/persona/preset/delete', async (runtime, req, res) => {
     const body = await readBody(req);
     const result = deletePersonaPreset(runtime, body);

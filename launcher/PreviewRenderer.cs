@@ -28,7 +28,7 @@ namespace WhaleLauncher
             catch { }
         }
 
-        public static async Task RunAsync(string output, double scale, int navIndex)
+        public static async Task RunAsync(string output, double scale, int navIndex, string section = "")
         {
             Trace("start output=" + output + " scale=" + scale + " nav=" + navIndex);
             try
@@ -49,10 +49,22 @@ namespace WhaleLauncher
                 win.Show();
                 Trace("window shown");
 
-                // Loaded 之后页面会异步拉一次数据；给它一点时间把卡片和输入框填出来。
-                await Task.Delay(1200);
+                // Loaded 之后页面会异步拉一次数据；本地配置要起一次 node，给它足够时间填表。
+                await Task.Delay(2600);
                 if (navIndex >= 0 && navIndex < win.Nav.Items.Count) win.Nav.SelectedIndex = navIndex;
-                await Task.Delay(900);
+                // 页面 Loaded 后还会异步拉一次配置；等它把字段和摘要填出来再截图。
+                if (win.Host.Content is Views.SettingsPage settingsPage)
+                    await Task.WhenAny(settingsPage.PreviewLoaded, Task.Delay(9000));
+                await Task.Delay(600);
+                // 分身页有五个分段；功能页有四个页签；设置页可展开高级 / 带搜索词。
+                // 截图时点名叫哪一段，否则只能拍到默认段。
+                if (!string.IsNullOrWhiteSpace(section))
+                {
+                    if (win.Host.Content is Views.SelfPage self) self.PreviewSection(section);
+                    else if (win.Host.Content is Views.FunctionPage function) function.PreviewSection(section);
+                    else if (win.Host.Content is Views.SettingsPage settings) settings.PreviewSection(section);
+                }
+                await Task.Delay(600);
                 win.UpdateLayout();
                 Trace("layout " + win.ActualWidth + "x" + win.ActualHeight);
 
