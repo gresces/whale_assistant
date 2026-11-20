@@ -810,6 +810,75 @@ test('发言范围唯一入口在微信页，主动提醒不重复弹窗，UIA �
   assert.match(check, /reconfigure\(encoding="utf-8"/);
 });
 
+test('发言范围：两段名单、顶部状态摘要、仅白名单开关与即时保存', () => {
+  const xaml = readLauncher('Views/ChatPolicyWindow.xaml');
+  const code = readLauncher('Views/ChatPolicyWindow.xaml.cs');
+  const listXaml = readLauncher('Views/ContactCheckList.xaml');
+  const listCode = readLauncher('Views/ContactCheckList.xaml.cs');
+
+  // 两段结构：黑名单在前、白名单在后，用现有的分段页签切换。
+  const mutedAt = xaml.indexOf('x:Name="MutedPanel"');
+  const whiteAt = xaml.indexOf('x:Name="WhitelistPanel"');
+  assert.ok(mutedAt >= 0 && whiteAt > mutedAt, '黑名单段必须在白名单段之前');
+  assert.match(code, /SegmentedTabs\.Make\("黑名单"/, '黑名单段要用分段页签');
+  assert.match(code, /SegmentedTabs\.Make\("白名单"/, '白名单段要用分段页签');
+
+  // 顶部状态摘要：一句当前生效范围，不铺说明墙。
+  assert.ok(xaml.includes('x:Name="SummaryText"'), '缺少状态摘要');
+  assert.ok(code.includes('仅白名单 · '), '摘要缺少仅白名单口径');
+  assert.ok(code.includes('个会话可发言'), '摘要缺少可发言会话数');
+  assert.ok(code.includes('全部会话都不处理'), '黑名单全选时摘要要说全部不处理');
+  assert.match(code, /已保存 · /, '顶部要显示已保存时间');
+
+  // 仅白名单模式属于白名单段顶部；关闭时给「仅用于主动搭话」次级标签。
+  const switchAt = xaml.indexOf('x:Name="WhitelistOnly"');
+  assert.ok(switchAt > whiteAt && switchAt < xaml.indexOf('x:Name="WhitelistHost"'),
+    '仅白名单开关要放在白名单段顶部');
+  assert.ok(xaml.includes('x:Name="WhitelistTag"') && xaml.includes('仅用于主动搭话'),
+    '关闭时要显示「仅用于主动搭话」标签');
+  assert.match(code, /WhitelistTag\.Visibility = only \? Visibility\.Collapsed : Visibility\.Visible/,
+    '标签要跟开关联动');
+
+  // 影响预览只在黑名单段出现。
+  const impactAt = xaml.indexOf('对这些会话：不回复、不解码图片/表情、不主动搭话');
+  assert.ok(impactAt > mutedAt && impactAt < whiteAt, '影响预览只属于黑名单段');
+
+  // 已选行：名称 + 私聊/群聊 + 右侧移除；添加会话走现有联系人目录。
+  assert.match(listXaml, /Content="添加会话"/, '缺少添加会话入口');
+  assert.match(listXaml, /Content="移除"/, '每行缺少移除按钮');
+  assert.ok(listXaml.includes('{Binding Kind}'), '每行要显示私聊/群聊标签');
+  assert.match(listXaml, /Style="\{StaticResource TopBtn\}"/, '移除按钮要复用现有按钮样式');
+  assert.match(listXaml, /FocusVisualStyle="\{StaticResource FluentFocusVisual\}"/, '移除按钮要有可见焦点');
+  assert.match(listXaml, /KeyboardNavigation\.TabNavigation="Continue"/, '列表要能用 Tab 遍历');
+  assert.ok(listCode.includes('没有黑名单会话。需要彻底忽略某个群时再加。'), '缺少黑名单空状态提示');
+  assert.ok(listCode.includes('白名单是空的'), '缺少白名单空状态提示');
+
+  // 超过 8 个才显示筛选；添加支持多选并立刻保存。
+  assert.match(listCode, /SearchThreshold = 8/, '筛选阈值应为 8');
+  assert.match(listCode, /_chosen\.Count > SearchThreshold/, '超过 8 个才显示筛选框');
+  assert.match(listCode, /_pending\.Add\(row\.Wxid\)/, '添加会话要支持多选');
+  assert.match(listCode, /if \(_preview\) return;[\s\S]{0,40}var res = await _saver\.SaveAsync\(BuildPatch\)/,
+    '添加 / 移除后要立即保存');
+
+  // 失败回滚；没有「保存」大按钮。
+  assert.match(listCode, /Revert\(\)/, '保存失败要回滚名单');
+  assert.doesNotMatch(xaml, /Content="保存"/, '发言范围不应再有保存大按钮');
+  assert.ok(xaml.includes('x:Name="SaveState"'), '保存状态要显示在顶部');
+
+  // 尺寸与滚动：560×560 卡片（正文 512×412），长名单只在列表内部滚动。
+  assert.match(xaml, /Width="512"/, '正文宽度应固定为 512');
+  assert.match(xaml, /Height="412"/, '正文高度应固定为 412');
+  assert.doesNotMatch(xaml, /<ScrollViewer/, '发言范围不应该整窗滚动');
+  assert.match(listXaml, /ScrollViewer\.VerticalScrollBarVisibility="Auto"/, '名单要在卡片内部滚动');
+  assert.match(readLauncher('Views/BridgePage.xaml.cs'),
+    /AppDialog\.ShowContent\("发言范围", new ChatPolicyWindow\(_sup\), 560\)/, '弹层卡片宽度应为 560');
+
+  // Esc 关闭沿用统一弹层；微信页加一行图片识别提示。
+  assert.match(readLauncher('AppDialog.cs'), /Key\.Escape/, 'Esc 要关闭弹层');
+  assert.ok(readLauncher('Views/BridgePage.xaml')
+    .includes('图片识别需要先在微信里点开任意一张图片（4.x 加密）'), '微信页缺少图片识别提示');
+});
+
 test('启动器不再使用系统 MessageBox，统一走应用内 AppDialog', () => {
   const files = fs.readdirSync(path.join(root, 'launcher'), { recursive: true })
     .filter((rel) => String(rel).endsWith('.cs'));

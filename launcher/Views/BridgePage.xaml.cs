@@ -96,7 +96,7 @@ namespace WhaleLauncher.Views
 
         private void OnChatPolicy(object sender, RoutedEventArgs e)
         {
-            AppDialog.ShowContent("微信发言范围", new ChatPolicyWindow(_sup));
+            AppDialog.ShowContent("发言范围", new ChatPolicyWindow(_sup), 560);
         }
 
         private static ConsoleRow Wrap(LogLine l) => new ConsoleRow

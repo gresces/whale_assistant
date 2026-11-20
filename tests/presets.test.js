@@ -83,7 +83,8 @@ test('id 里带路径穿越取不到东西', () => {
 
 test('仓库自带的人设预设都是通用版：不含微信号、群昵称、Key', () => {
   const root = path.resolve(__dirname, '..');
-  const list = presets.list({ paths: { root } });
+  // 只查仓库自带的预设：data/personas 下是用户自己的预设，合法地可能带自己的联系方式。
+  const list = presets.list({ paths: { root } }).filter((item) => item.source === 'builtin');
   assert.ok(list.length >= 1, '至少要有一个人设预设');
   for (const item of list) {
     const preset = presets.load({ paths: { root } }, item.id);

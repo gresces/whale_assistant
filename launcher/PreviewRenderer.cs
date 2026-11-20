@@ -3,7 +3,9 @@ using System.IO;
 using System.Text;
 using System.Threading.Tasks;
 using System.Windows;
+using System.Windows.Controls;
 using System.Windows.Media;
+using System.Windows.Media.Effects;
 using System.Windows.Media.Imaging;
 
 namespace WhaleLauncher
@@ -68,6 +70,18 @@ namespace WhaleLauncher
                     else if (win.Host.Content is Views.SettingsPage settings) settings.PreviewSection(section);
                     else if (win.Host.Content is Views.ChatPage chat) await chat.PreviewSectionAsync(section);
                 }
+
+                // 发言范围弹层不是页面，单独按真实弹层尺寸搭一层再拍；
+                // 示例名单来自 PreviewSeed，不读真实配置。
+                Grid policyOverlay = null;
+                if (section == "policy" || section == "policy-blacklist")
+                {
+                    var policy = new Views.ChatPolicyWindow(win.Supervisor);
+                    policy.PreviewSeed(whitelistOnly: true, blacklist: section == "policy-blacklist");
+                    policyOverlay = ShowPolicyPreview(win, policy);
+                    await Task.WhenAny(policy.PreviewLoaded, Task.Delay(2000));
+                    await Task.Delay(300);
+                }
                 await Task.Delay(600);
                 win.UpdateLayout();
                 Trace("layout " + win.ActualWidth + "x" + win.ActualHeight);
@@ -87,6 +101,7 @@ namespace WhaleLauncher
                 using (var fs = File.Create(full)) enc.Save(fs);
                 Trace("saved " + full);
 
+                if (policyOverlay != null) RemovePolicyPreview(win, policyOverlay);
                 win.Close();
                 Application.Current.Shutdown();
             }
@@ -94,6 +109,104 @@ namespace WhaleLauncher
             {
                 Trace("FAILED: " + ex);
                 Application.Current?.Shutdown(3);
+            }
+        }
+
+        /// <summary>按 AppDialog.ShowContent 的同一套尺寸搭出弹层，只为截图，不跑消息循环。</summary>
+        private static Grid ShowPolicyPreview(Window win, Views.ChatPolicyWindow policy)
+        {
+            if (!(win.Content is Grid root)) return null;
+
+            var overlay = new Grid { Background = new SolidColorBrush(Color.FromArgb(166, 0, 0, 0)) };
+            Grid.SetRowSpan(overlay, Math.Max(1, root.RowDefinitions.Count));
+            Grid.SetColumnSpan(overlay, Math.Max(1, root.ColumnDefinitions.Count));
+            Panel.SetZIndex(overlay, int.MaxValue);
+
+            var card = new Border
+            {
+                Width = 560,
+                Height = 560,
+                CornerRadius = new CornerRadius(8),
+                BorderThickness = new Thickness(1),
+                HorizontalAlignment = HorizontalAlignment.Center,
+                VerticalAlignment = VerticalAlignment.Center
+            };
+            card.SetResourceReference(Border.BackgroundProperty, "PopupBg");
+            card.SetResourceReference(Border.BorderBrushProperty, "CardBorder");
+
+            var layout = new DockPanel();
+            card.Child = layout;
+
+            var header = new DockPanel { Margin = new Thickness(24, 16, 24, 0) };
+            DockPanel.SetDock(header, Dock.Top);
+            var title = new TextBlock
+            {
+                Text = "发言范围",
+                FontSize = 16,
+                FontWeight = FontWeights.SemiBold,
+                VerticalAlignment = VerticalAlignment.Center
+            };
+            title.SetResourceReference(TextBlock.ForegroundProperty, "Text");
+            var close = new Button
+            {
+                Content = "×",
+                FontSize = 18,
+                Width = 32,
+                Height = 32,
+                Padding = new Thickness(0),
+                Style = Application.Current?.TryFindResource("Ghost") as Style,
+                IsHitTestVisible = false
+            };
+            DockPanel.SetDock(close, Dock.Right);
+            header.Children.Add(close);
+            header.Children.Add(title);
+            layout.Children.Add(header);
+
+            var footer = new StackPanel
+            {
+                Orientation = Orientation.Horizontal,
+                HorizontalAlignment = HorizontalAlignment.Right,
+                Margin = new Thickness(22, 12, 22, 18)
+            };
+            footer.Children.Add(new Button
+            {
+                Content = "关闭",
+                Style = Application.Current?.TryFindResource("Primary") as Style,
+                Padding = new Thickness(16, 5, 16, 5),
+                IsHitTestVisible = false
+            });
+            DockPanel.SetDock(footer, Dock.Bottom);
+            layout.Children.Add(footer);
+
+            var body = new StackPanel { Margin = new Thickness(24, 20, 24, 18) };
+            body.Children.Add(policy);
+            layout.Children.Add(new ScrollViewer
+            {
+                Content = body,
+                VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+                Focusable = false
+            });
+
+            overlay.Children.Add(card);
+            root.Children.Add(overlay);
+
+            foreach (UIElement child in root.Children)
+            {
+                if (ReferenceEquals(child, overlay)) continue;
+                child.SetCurrentValue(UIElement.IsEnabledProperty, false);
+                child.SetCurrentValue(UIElement.EffectProperty, new BlurEffect { Radius = 8 });
+            }
+            return overlay;
+        }
+
+        private static void RemovePolicyPreview(Window win, Grid overlay)
+        {
+            if (!(win.Content is Grid root)) return;
+            root.Children.Remove(overlay);
+            foreach (UIElement child in root.Children)
+            {
+                child.SetCurrentValue(UIElement.IsEnabledProperty, true);
+                child.SetCurrentValue(UIElement.EffectProperty, null);
             }
         }
     }

@@ -72,6 +72,9 @@ class _GProxy:
 def init(env):
     env.setdefault('G', _GProxy(env))
     env.setdefault('self', _SelfProxy(env))
+    # 接收端现在会按 G.CONFIG_PATH 检查发言范围。测试默认不读开发机上的
+    # data/config.json（那里面可能有 whitelistOnly），需要配置的用例自己传路径。
+    env.setdefault('CONFIG_PATH', '')
     return env
 
 

@@ -30,9 +30,12 @@ test('视觉模型的输出上限给满（智谱上限 1024，不能再被截断
   assert.ok(Number(cap[1]) <= 1000, '提示词上限别超过 1000 字：' + cap[1]);
 });
 
-test('桥接优先拿完整图，不拿缩略图', () => {
+test('桥接优先拿完整图，缩略图只作为失败后的兜底', () => {
   assert.match(bridgeSrc, /for _tier in \(['"]full['"], ['"]best['"]\)/, '要按 full → best 顺序取图');
-  assert.match(bridgeSrc, /tier=_tier/);
+  assert.match(bridgeSrc, /tier=tier/);
+  // thumb 只能在 full/best 都失败且确实有密钥时补一次，不能抢占完整图。
+  assert.match(bridgeSrc, /for _tier in \(['"]full['"], ['"]best['"]\)[\s\S]{0,900}?['"]thumb['"]/,
+    '缩略图必须排在完整图之后');
   assert.match(bridgeSrc, /图片档位/, '要记日志，方便排查');
 });
 

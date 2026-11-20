@@ -37,6 +37,9 @@ namespace WhaleLauncher
         private bool _refreshing;
         private bool _memoryNoticeChecked;
 
+        /// <summary>离屏预览用：和运行时共用同一个内核路径，但不触发启动。</summary>
+        public RuntimeSupervisor Supervisor => _sup;
+
         // 「在岗」胶囊不是每次刷新都问：10 秒一次够用，也不让内核每分钟多三十个请求。
         private DateTime _lastOnDutyChip = DateTime.MinValue;
         private bool _onDutyChipBusy;

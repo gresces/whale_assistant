@@ -281,6 +281,14 @@ const DEFAULT_CONFIG = {
     mediaMaxMB: 500,
   },
 
+  // 图片读取兜底：磁盘缓存解不开时，用微信自己的「右键 → 另存为…」把原图
+  // 落到 data/media-cache（比截预览窗清楚）。只在失败路径触发，每次识图最多一次；
+  // 超时夹在 5~60 秒。桥接直接读这一段（bridge/image_save_as.py）。
+  image: {
+    uiSaveFallback: true,
+    uiSaveTimeoutSeconds: 15,
+  },
+
   vision: { apiKey: '', baseUrl: 'https://open.bigmodel.cn/api/paas/v4', model: 'glm-4.6v-flash', timeoutMs: 30000 },
   // 新安装默认启用并跟随聊天；已有的显式关闭和手动服务配置保持不变。
   // provider=auto 时：地址含 dashscope 走百炼，含 api.deepseek.com 走 DeepSeek。

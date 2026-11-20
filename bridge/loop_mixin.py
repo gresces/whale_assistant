@@ -237,6 +237,12 @@ class LoopMixin:
         """启动后预热发送通道，避免第一条回复慢 5~10 秒。"""
         G.time.sleep(3)
         try:
+            # 媒体下载器也先建好：data/image-key.json 里的密钥在启动日志里就能看到，
+            # 不用等到第一张图才初始化（建实例本身不扫微信内存）。
+            self._get_media()
+        except Exception as e:
+            G.log('媒体下载器预热失败（收到图片时会再试）：', repr(e))
+        try:
             if not self.selected_window_ready():
                 G.log('发送通道预热：等待确认已选微信账号，请打开该账号的微信主窗口')
                 return
